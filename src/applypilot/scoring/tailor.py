@@ -63,54 +63,54 @@ def _build_tailor_prompt(profile: dict) -> str:
     education = profile.get("experience", {})
     education_level = education.get("education_level", "")
 
-    return f"""You are a senior technical recruiter rewriting a resume to get this person an interview.
+    return f"""Tu es un recruteur technique senior qui réécrit un CV pour décrocher un entretien. Le candidat recherche un STAGE.
 
-Take the base resume and job description. Return a tailored resume as a JSON object.
+Prends le CV de base et l'offre, et renvoie un CV adapté sous forme d'objet JSON. **Rédige TOUT le contenu en français.**
 
-## RECRUITER SCAN (6 seconds):
-1. Title -- matches what they're hiring?
-2. Summary -- 2 sentences proving you've done this work
-3. First 3 bullets of most recent role -- verbs and outcomes match?
-4. Skills -- must-haves visible immediately?
+## SCAN RECRUTEUR (6 secondes) :
+1. Intitulé — correspond à ce qu'ils recrutent ?
+2. Accroche (résumé) — 2 phrases qui prouvent que tu sais faire ce travail
+3. 3 premières puces de l'expérience la plus récente — verbes et résultats pertinents ?
+4. Compétences — les indispensables visibles immédiatement ?
 
-## SKILLS BOUNDARY (real skills only):
+## PÉRIMÈTRE DE COMPÉTENCES (uniquement les compétences réelles) :
 {skills_block}
 
-You MAY add 2-3 closely related tools (Kubernetes if Docker, Terraform if AWS, Redis if PostgreSQL). No unrelated languages/frameworks.
+Tu PEUX ajouter 2-3 outils étroitement liés (Entra ID si Active Directory, Intune si M365, Terraform si Azure). Aucun langage/outil sans rapport.
 
-## TAILORING RULES:
+## RÈGLES D'ADAPTATION :
 
-TITLE: Use the job title verbatim from the posting (Jobscan: 10.6x interview-rate lift). Only strip internal-req prefixes like "JREQ197053 -" and trailing team tags like "(Payments Team)". Keep the full role name including specialty — "Staff Software Engineer, AI Platform" stays as-is; "Senior Backend Engineer - Python" stays as-is.
+INTITULÉ : reprends l'intitulé de l'offre tel quel. Retire seulement les préfixes de référence internes (« REF197053 - ») et les tags d'équipe en fin de titre. Conserve « Stage » / « Alternance » et la spécialité s'ils figurent dans l'offre.
 
-SUMMARY: Rewrite from scratch. Lead with the 1-2 skills that matter most for THIS role. Sound like someone who's done this job.
+ACCROCHE : réécris de zéro. Mets en avant les 1-2 compétences les plus importantes pour CE poste. Ton de quelqu'un qui a déjà fait ce travail (missions, projets de formation, TP).
 
-SKILLS: Reorder each category so the job's must-haves appear first.
+COMPÉTENCES : réordonne chaque catégorie pour que les indispensables de l'offre apparaissent en premier.
 
-Reframe EVERY bullet for this role. Same real work, different angle. Every bullet must be reworded. Never copy verbatim.
+Reformule CHAQUE puce pour ce poste. Même travail réel, angle différent. Chaque puce doit être reformulée. Jamais de copie mot pour mot.
 
-PROJECTS: Reorder by relevance. Drop irrelevant projects entirely.
+PROJETS : réordonne par pertinence. Supprime entièrement les projets non pertinents.
 
-BULLETS: Strong verb + what you built + quantified impact. Vary verbs (Built, Designed, Implemented, Reduced, Automated, Deployed, Operated, Optimized). Most relevant first. Max 4 per section.
+PUCES : verbe d'action + ce que tu as fait/construit + impact chiffré quand il existe. Varie les verbes (Déployé, Conçu, Implémenté, Automatisé, Sécurisé, Administré, Configuré, Migré, Optimisé). Le plus pertinent d'abord. Max 4 par section.
 
-EDUCATION: Copy every school from the ORIGINAL RESUME's education section — one object per school. Preserve the institution name, degree, field of study, and years EXACTLY as written in the original. Never invent a degree, field, or date. If a school lists no degree, omit the "degree" key; if it lists no years, omit the "dates" key. Do not reorder, summarize, or merge schools — education is factual, not tailored. Do NOT output the education level ("{education_level}") as if it were a school.
+FORMATION : copie chaque établissement de la section formation du CV ORIGINAL — un objet par établissement. Conserve le nom de l'établissement, le diplôme, la spécialité et les années EXACTEMENT comme écrits dans l'original. N'invente jamais un diplôme, une spécialité ni une date. Si un établissement n'indique pas de diplôme, omets la clé « degree » ; s'il n'indique pas d'années, omets la clé « dates ». Ne réordonne pas, ne résume pas et ne fusionne pas les établissements — la formation est factuelle, pas adaptée. N'affiche PAS le niveau d'études (« {education_level} ») comme s'il s'agissait d'un établissement.
 
-## VOICE:
-- Write like a real engineer. Short, direct.
-- GOOD: "Automated financial reporting with Python + API integrations, cut processing time from 10 hours to 2"
-- BAD: "Leveraged cutting-edge AI technologies to drive transformative operational efficiencies"
-- NEVER use: passionate, dedicated, leveraging, spearheaded, robust, cutting-edge, proven track record, strong track record, eager, stakeholders, synergy, seamless, streamlined, end-to-end, detail-oriented, results-driven, I am confident, I believe, I am excited
-- No em dashes. Use commas, periods, or hyphens.
+## TON :
+- Écris comme un vrai professionnel. Court, direct, en français.
+- BON : « Automatisé la création de comptes Active Directory en PowerShell, 50 comptes/jour sans intervention »
+- MAUVAIS : « Mobilisé des technologies de pointe pour générer une efficacité transformationnelle »
+- N'utilise JAMAIS ces mots creux : passionné, dynamique, rigoureux, autonome, motivé, sérieux, polyvalent, force de proposition, esprit d'équipe, à l'écoute, proactif, à la pointe
+- Pas de tirets cadratins (—) dans les puces. Utilise des virgules, des points ou des traits d'union.
 
-## HARD RULES:
-- Do NOT invent work, companies, degrees, or certifications
-- Do NOT change real numbers ({metrics_str})
-- Preserved companies: {companies_str} -- names stay as-is
-- Preserved school: {school}
-- Must fit 1 page.
+## RÈGLES ABSOLUES (non négociables) :
+- N'invente AUCUN travail, entreprise, diplôme, certification ni compétence.
+- Ne modifie AUCUN chiffre réel ({metrics_str}).
+- Entreprises / organismes à préserver : {companies_str} — noms inchangés.
+- Établissement à préserver : {school}
+- Doit tenir sur 1 page.
 
-## OUTPUT: Return ONLY valid JSON. No markdown fences. No commentary. No "here is" preamble.
+## SORTIE : renvoie UNIQUEMENT du JSON valide. Pas de balises markdown. Aucun commentaire. Aucun préambule « voici ».
 
-{{"title":"Role Title","summary":"2-3 tailored sentences.","skills":{{"Languages":"...","Frameworks":"...","DevOps & Infra":"...","Databases":"...","Tools":"..."}},"experience":[{{"header":"Title at Company","subtitle":"Tech | Dates","bullets":["bullet 1","bullet 2","bullet 3","bullet 4"]}}],"projects":[{{"header":"Project Name - Description","subtitle":"Tech | Dates","bullets":["bullet 1","bullet 2"]}}],"education":[{{"institution":"School Name","degree":"Degree, Field of study (omit key if not in original)","dates":"YYYY - YYYY (omit key if not in original)"}}]}}"""
+{{"title":"Intitulé du poste","summary":"2-3 phrases adaptées, en français.","skills":{{"Systèmes & Réseaux":"...","Cybersécurité":"...","Cloud & Identité":"...","Langages & Scripts":"...","Outils":"..."}},"experience":[{{"header":"Intitulé — Entreprise","subtitle":"Technos | Dates","bullets":["puce 1","puce 2","puce 3","puce 4"]}}],"projects":[{{"header":"Nom du projet - Description","subtitle":"Technos | Dates","bullets":["puce 1","puce 2"]}}],"education":[{{"institution":"Établissement","degree":"Diplôme, spécialité (omettre la clé si absente de l'original)","dates":"AAAA - AAAA (omettre la clé si absente de l'original)"}}]}}"""
 
 
 def _build_judge_prompt(profile: dict) -> str:
