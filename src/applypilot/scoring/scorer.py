@@ -219,8 +219,10 @@ def _build_candidate_summary(profile: dict) -> str:
              or "Étudiant ingénieur en cybersécurité (Bac+4/5)")
     school = exp.get("school") or personal.get("school") or ""
     target = exp.get("target_role") or "stage en intégration IT & cybersécurité"
-    languages = boundary.get("languages", []) or []
-    platforms = boundary.get("platforms", []) or []
+    all_skills: list[str] = []
+    for items in boundary.values():
+        if isinstance(items, list):
+            all_skills.extend(s for s in items if s)
 
     head = level + (f" à {school}" if school else "")
     parts = [f"{head}, recherche un {target}."]
@@ -229,10 +231,8 @@ def _build_candidate_summary(profile: dict) -> str:
     start = stage.get("start_date") or ""
     parts.append(f"Stage de {duration}{(' à partir de ' + start) if start else ''}.")
 
-    if languages:
-        parts.append(f"Compétences : {', '.join(languages[:10])}.")
-    if platforms:
-        parts.append(f"Environnements : {', '.join(platforms[:8])}.")
+    if all_skills:
+        parts.append(f"Compétences : {', '.join(all_skills[:14])}.")
     return " ".join(parts)
 
 

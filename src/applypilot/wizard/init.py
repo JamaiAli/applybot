@@ -79,69 +79,73 @@ def _setup_resume() -> None:
 # ---------------------------------------------------------------------------
 
 def _setup_profile() -> dict:
-    """Walk through profile questions and return a nested profile dict."""
-    console.print(Panel("[bold]Step 2: Profile[/bold]\nTell ApplyPilot about yourself. This powers scoring, tailoring, and auto-fill."))
+    """Questions de profil (FR, orienté stage) ; renvoie un dict profil imbriqué."""
+    console.print(Panel("[bold]Étape 2 : Profil[/bold]\nParle-nous de toi. Ces infos alimentent le scoring, l'adaptation du CV et le remplissage des formulaires."))
 
     profile: dict = {}
 
-    # -- Personal --
-    console.print("\n[bold cyan]Personal Information[/bold cyan]")
+    # -- Informations personnelles --
+    console.print("\n[bold cyan]Informations personnelles[/bold cyan]")
     profile["personal"] = {
-        "full_name": Prompt.ask("Full name"),
-        "email": Prompt.ask("Email address"),
-        "phone": Prompt.ask("Phone number", default=""),
-        "city": Prompt.ask("City"),
-        "country": Prompt.ask("Country"),
-        "linkedin_url": Prompt.ask("LinkedIn URL", default=""),
-        "password": Prompt.ask("Job site password (used for login walls during auto-apply)", password=True, default=""),
+        "full_name": Prompt.ask("Nom complet"),
+        "email": Prompt.ask("Adresse e-mail"),
+        "phone": Prompt.ask("Téléphone", default=""),
+        "city": Prompt.ask("Ville"),
+        "country": Prompt.ask("Pays", default="France"),
+        "linkedin_url": Prompt.ask("URL LinkedIn", default=""),
+        "github_url": Prompt.ask("URL GitHub / portfolio", default=""),
+        "password": Prompt.ask("Mot de passe site emploi (pour les murs de connexion en auto-apply)", password=True, default=""),
     }
 
-    # -- Work Authorization --
-    console.print("\n[bold cyan]Work Authorization[/bold cyan]")
-    profile["work_authorization"] = {
-        "legally_authorized": Confirm.ask("Are you legally authorized to work in your target country?"),
-        "needs_sponsorship": Confirm.ask("Will you now or in the future need sponsorship?"),
-    }
-
-    # -- Compensation --
-    console.print("\n[bold cyan]Compensation[/bold cyan]")
-    salary = Prompt.ask("Expected annual salary (number)", default="")
-    salary_currency = Prompt.ask("Currency", default="USD")
-    salary_range = Prompt.ask("Acceptable range (e.g. 80000-120000)", default="")
-    range_parts = salary_range.split("-") if "-" in salary_range else [salary, salary]
-    profile["compensation"] = {
-        "salary_expectation": salary,
-        "salary_currency": salary_currency,
-        "salary_range_min": range_parts[0].strip(),
-        "salary_range_max": range_parts[1].strip() if len(range_parts) > 1 else range_parts[0].strip(),
-    }
-
-    # -- Experience --
-    console.print("\n[bold cyan]Experience[/bold cyan]")
+    # -- Études et recherche de stage --
+    console.print("\n[bold cyan]Études et recherche de stage[/bold cyan]")
+    school = Prompt.ask("École / université")
     profile["experience"] = {
-        "years_of_experience_total": Prompt.ask("Years of professional experience", default=""),
-        "education_level": Prompt.ask("Highest education (e.g. Bachelor's, Master's, PhD, Self-taught)", default=""),
-        "current_title": Prompt.ask("Current/most recent job title", default=""),
+        "years_of_experience_total": Prompt.ask("Années d'expérience pro (0 si étudiant)", default="0"),
+        "education_level": Prompt.ask("Niveau d'études", default="Bac+5 (cycle ingénieur)"),
+        "current_job_title": Prompt.ask("Statut / intitulé actuel", default="Étudiant ingénieur en cybersécurité"),
+        "school": school,
+        "target_role": Prompt.ask("Type de poste visé", default="stage en intégration IT & cybersécurité"),
     }
 
-    # -- Skills Boundary --
-    console.print("\n[bold cyan]Skills[/bold cyan] (comma-separated)")
-    langs = Prompt.ask("Programming languages", default="")
-    frameworks = Prompt.ask("Frameworks & libraries", default="")
-    tools = Prompt.ask("Tools & platforms (e.g. Docker, AWS, Git)", default="")
+    # -- Détails du stage --
+    console.print("\n[bold cyan]Détails du stage[/bold cyan]")
+    profile["internship"] = {
+        "type": Prompt.ask("Type de stage", default="Stage de fin d'études"),
+        "duration": Prompt.ask("Durée", default="6 mois"),
+        "start_date": Prompt.ask("Date de début souhaitée", default="avril 2027"),
+        "convention_required": Confirm.ask("Convention de stage nécessaire ?", default=True),
+        "convention_provider": school,
+        "availability": Prompt.ask("Disponibilité (phrase libre)", default="Disponible à partir d'avril 2027, pour 6 mois"),
+        "remote_preference": Prompt.ask("Préférence présentiel / télétravail", default="Sur site en France / hybride"),
+    }
+    profile["availability"] = {
+        "earliest_start_date": profile["internship"]["start_date"],
+        "available_for_full_time": "Non",
+        "available_for_internship": "Oui",
+    }
+
+    # -- Compétences (séparées par des virgules) --
+    console.print("\n[bold cyan]Compétences[/bold cyan] (séparées par des virgules)")
+    sysres = Prompt.ask("Systèmes & réseaux (ex. Windows Server, Linux, Active Directory)", default="")
+    cyber = Prompt.ask("Cybersécurité (ex. IAM, durcissement, analyse de risques)", default="")
+    cloud = Prompt.ask("Cloud & identité (ex. Azure, Entra ID, M365)", default="")
+    langs = Prompt.ask("Langages & scripts (ex. Python, PowerShell, Bash)", default="")
+    tools = Prompt.ask("Outils (ex. Git, VMware, Wireshark)", default="")
     profile["skills_boundary"] = {
-        "programming_languages": [s.strip() for s in langs.split(",") if s.strip()],
-        "frameworks": [s.strip() for s in frameworks.split(",") if s.strip()],
-        "tools": [s.strip() for s in tools.split(",") if s.strip()],
+        "systemes_reseaux": [s.strip() for s in sysres.split(",") if s.strip()],
+        "cybersecurite": [s.strip() for s in cyber.split(",") if s.strip()],
+        "cloud_identite": [s.strip() for s in cloud.split(",") if s.strip()],
+        "langages_scripts": [s.strip() for s in langs.split(",") if s.strip()],
+        "outils": [s.strip() for s in tools.split(",") if s.strip()],
     }
 
-    # -- Resume Facts (preserved truths for tailoring) --
-    console.print("\n[bold cyan]Resume Facts[/bold cyan]")
-    console.print("[dim]These are preserved exactly during resume tailoring — the AI will never change them.[/dim]")
-    companies = Prompt.ask("Companies to always keep (comma-separated)", default="")
-    projects = Prompt.ask("Projects to always keep (comma-separated)", default="")
-    school = Prompt.ask("School name(s) to preserve", default="")
-    metrics = Prompt.ask("Real metrics to preserve (e.g. '99.9% uptime, 50k users')", default="")
+    # -- Faits du CV (vérités préservées pour l'adaptation) --
+    console.print("\n[bold cyan]Faits du CV[/bold cyan]")
+    console.print("[dim]Préservés à l'identique lors de l'adaptation — l'IA ne les invente ni ne les modifie jamais.[/dim]")
+    companies = Prompt.ask("Entreprises / organismes à toujours garder (virgules)", default="")
+    projects = Prompt.ask("Projets à toujours garder (virgules)", default="")
+    metrics = Prompt.ask("Chiffres réels à préserver (ex. '20 postes migrés, 3 sites')", default="")
     profile["resume_facts"] = {
         "preserved_companies": [s.strip() for s in companies.split(",") if s.strip()],
         "preserved_projects": [s.strip() for s in projects.split(",") if s.strip()],
@@ -149,22 +153,20 @@ def _setup_profile() -> dict:
         "real_metrics": [s.strip() for s in metrics.split(",") if s.strip()],
     }
 
-    # -- EEO Voluntary (defaults) --
-    profile["eeo_voluntary"] = {
-        "gender": "Decline to self-identify",
-        "ethnicity": "Decline to self-identify",
-        "veteran_status": "Decline to self-identify",
-        "disability_status": "Decline to self-identify",
+    # -- Autorisation de travail / divers (défauts France) --
+    profile["work_authorization"] = {
+        "legally_authorized_to_work": "Oui",
+        "require_sponsorship": "Non",
     }
-
-    # -- Availability --
-    profile["availability"] = {
-        "earliest_start_date": Prompt.ask("Earliest start date", default="Immediately"),
+    profile["compensation"] = {
+        "salary_currency": "EUR",
+        "gratification_note": "Gratification de stage légale",
     }
+    profile["eeo_voluntary"] = {}
 
-    # Save
+    # Sauvegarde
     PROFILE_PATH.write_text(json.dumps(profile, indent=2, ensure_ascii=False), encoding="utf-8")
-    console.print(f"\n[green]Profile saved to {PROFILE_PATH}[/green]")
+    console.print(f"\n[green]Profil enregistré dans {PROFILE_PATH}[/green]")
     return profile
 
 

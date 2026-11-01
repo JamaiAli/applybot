@@ -1,61 +1,66 @@
 {
   "personal": {
-    "full_name": "YOUR_LEGAL_NAME",
-    "preferred_name": "YOUR_PREFERRED_NAME",
-    "email": "your.email@example.com",
-    "password": "YOUR_JOB_SITE_PASSWORD",
-    "phone": "555-123-4567",
-    "address": "123 Main St",
-    "city": "Your City",
-    "province_state": "Your State/Province",
-    "country": "Your Country",
-    "postal_code": "A1B 2C3",
-    "linkedin_url": "https://www.linkedin.com/in/yourprofile",
-    "github_url": "https://github.com/yourusername",
+    "full_name": "PRENOM NOM",
+    "preferred_name": "Prénom",
+    "email": "prenom.nom@example.com",
+    "phone": "+33 6 12 34 56 78",
+    "address": "12 rue de l'Exemple",
+    "city": "Bourges",
+    "province_state": "Centre-Val de Loire",
+    "country": "France",
+    "postal_code": "18000",
+    "linkedin_url": "",
+    "github_url": "https://github.com/votre-pseudo",
     "portfolio_url": "",
     "website_url": ""
   },
   "work_authorization": {
-    "legally_authorized_to_work": "Yes",
-    "require_sponsorship": "No",
-    "work_permit_type": ""
+    "legally_authorized_to_work": "Oui",
+    "require_sponsorship": "Non",
+    "work_permit_type": "Citoyen UE / titre de séjour valide"
   },
   "availability": {
-    "earliest_start_date": "Immediately",
-    "available_for_full_time": "Yes",
-    "available_for_contract": "No"
+    "earliest_start_date": "avril 2027",
+    "available_for_full_time": "Non",
+    "available_for_internship": "Oui"
+  },
+  "internship": {
+    "type": "Stage de fin d'études",
+    "duration": "6 mois",
+    "start_date": "avril 2027",
+    "convention_required": true,
+    "convention_provider": "VOTRE_ÉCOLE",
+    "availability": "Disponible à partir d'avril 2027, pour 6 mois",
+    "remote_preference": "Sur site en France / hybride"
   },
   "compensation": {
-    "salary_expectation": "85000",
-    "salary_currency": "USD",
-    "salary_range_min": "80000",
-    "salary_range_max": "100000",
-    "currency_conversion_note": ""
+    "gratification_note": "Gratification de stage légale",
+    "salary_currency": "EUR",
+    "salary_expectation": "",
+    "salary_range_min": "",
+    "salary_range_max": ""
   },
   "experience": {
-    "years_of_experience_total": "3",
-    "education_level": "Bachelor's Degree",
-    "current_job_title": "",
-    "current_company": "",
-    "target_role": "software engineer"
+    "years_of_experience_total": "0",
+    "education_level": "Bac+4/5 — cycle ingénieur cybersécurité (en cours)",
+    "current_job_title": "Étudiant ingénieur en cybersécurité",
+    "school": "VOTRE_ÉCOLE",
+    "target_role": "stage en intégration IT & cybersécurité (Active Directory / Entra ID)"
   },
   "skills_boundary": {
-    "languages": ["Python", "SQL", "JavaScript"],
-    "frameworks": ["FastAPI", "Flask", "React"],
-    "devops": ["Docker", "AWS", "CI/CD"],
-    "databases": ["PostgreSQL", "MongoDB"],
-    "tools": ["Git", "Linux"]
+    "systemes_reseaux": ["Windows Server", "Linux", "Active Directory", "TCP/IP"],
+    "cybersecurite": ["Analyse de risques", "Durcissement", "IAM"],
+    "cloud_identite": ["Azure", "Entra ID", "Microsoft 365"],
+    "langages_scripts": ["Python", "PowerShell", "Bash"],
+    "outils": ["Git", "VMware", "Wireshark"]
   },
   "resume_facts": {
-    "preserved_companies": ["Company A", "Company B"],
-    "preserved_projects": ["Project X", "Project Y"],
-    "preserved_school": "Your University",
-    "real_metrics": ["50% improvement", "10x faster"]
+    "preserved_companies": [],
+    "preserved_projects": [],
+    "preserved_school": "VOTRE_ÉCOLE",
+    "real_metrics": []
   },
   "eeo_voluntary": {
-    "gender": "Decline to self-identify",
-    "race_ethnicity": "Decline to self-identify",
-    "veteran_status": "I am not a protected veteran",
-    "disability_status": "I do not wish to answer"
+    "note": "Peu pertinent en France ; laissé vide / « ne souhaite pas répondre »."
   }
 }
