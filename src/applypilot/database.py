@@ -311,7 +311,7 @@ _ALL_COLUMNS: dict[str, str] = {
     "scored_at": "TEXT",
     "score_error": "TEXT",                 # set when all LLM providers failed; fit_score stays NULL
     # 2026-04-30: terminal eligibility tag set by scorer.
-    # Values: NULL (not yet evaluated) | 'eligible' | 'non_us_only'.
+    # Values: NULL (not yet evaluated) | 'eligible' | 'hors_zone'.
     # Tailor/cover/apply gate on eligibility = 'eligible' OR IS NULL.
     "eligibility": "TEXT",
     # (score_attempts → score_attempts via _COLUMN_RENAMES below)

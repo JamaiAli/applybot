@@ -20,189 +20,146 @@ log = logging.getLogger(__name__)
 
 # ── Scoring Prompt ────────────────────────────────────────────────────────
 
-SCORE_PROMPT_TEMPLATE = """You are a job fit evaluator. Given a candidate's resume and a job description, score how well the candidate fits the role.
+SCORE_PROMPT_TEMPLATE = """Tu es un évaluateur d'adéquation entre un candidat et une offre, spécialisé dans les **stages**. Tu compares le CV du candidat à une offre et tu notes l'adéquation de 1 à 10.
 
-THE CANDIDATE: {candidate_summary}
+LE CANDIDAT : {candidate_summary}
 
-⚠️ GEOGRAPHY CHECK — DO THIS FIRST, BEFORE ANYTHING ELSE:
-The candidate is US-based (Seattle, WA). Any role restricted to non-US geography is INELIGIBLE.
-Read the FULL description for buried sentences like "This role will be remote and based in the UK"
-or "Remote — Ontario, BC or Alberta". A perfect tech stack on a non-US role is still INELIGIBLE.
+⚠️ VÉRIFICATION GÉOGRAPHIQUE — À FAIRE EN PREMIER :
+Le candidat cherche un stage **en France** : sur site en France, ou en télétravail/hybride ouvert à la France (ou à l'Europe / EMEA, qui incluent la France). Une offre restreinte à une zone géographique qui EXCLUT la France est hors zone, même en télétravail.
+Lis TOUTE la description pour repérer des restrictions enfouies (« must be based in the US », « right to work in the UK », « Remote — APAC/LATAM/India »).
 
-Output ELIGIBILITY: non_us_only when the role's hiring location is restricted to a non-US country
-even if the role is remote. Output ELIGIBILITY: eligible when the role is open to US workers
-(US-only, US-remote, global-remote, or no restriction).
+Renseigne ELIGIBILITY: hors_zone quand le poste est limité à un pays/une région hors de portée depuis la France (US-only, UK-only, Canada-only, APAC, LATAM, Inde, etc.), même à distance. Sinon ELIGIBILITY: eligible (France, Europe/EMEA, francophone, télétravail ouvert à la France, ou aucune restriction).
+Si hors_zone, tu PEUX quand même donner un SCORE sur l'adéquation technique (pour l'audit), mais c'est le tag d'éligibilité qui décide si la candidature continue.
 
-Common signals for non_us_only:
-- "based in (UK|Canada|Ireland|Germany|...)"
-- "Remote — (UK|Canada|Europe|EMEA|APAC)"
-- "(m/f/d)" / "(m/w/d)" German title suffix
-- UK/Canada right-to-work questions in the form
-- CET / GMT+N / IST timezone requirement
+CRITÈRES DE SCORE (adéquation avec un stage en intégration IT & cybersécurité, idéalement autour d'Active Directory / Entra ID) :
+- 10 : stage (ou alternance) quasi parfait — cybersécurité, intégration IT, administration systèmes, Active Directory / Entra ID, cloud/infrastructure, ou gestion de projet IT. Niveau adapté à un étudiant ingénieur (Bac+4/5). Durée compatible avec un stage de ~6 mois.
+- 9 : excellent stage IT/cyber, très aligné, 1-2 écarts de techno secondaire.
+- 7-8 : bon stage IT/cyber. Le candidat a la plupart des compétences attendues, écarts mineurs faciles à combler.
+- 5-6 : stage technique mais domaine éloigné (dev pur front, data science) OU niveau mal adapté.
+- 3-4 : poste technique mais PAS un stage (CDI/CDD junior ou confirmé), ou stage peu lié à l'IT/cyber.
+- 1-2 : hors cible (commercial, avant-vente, marketing, RH, design, poste senior/management sans composante technique junior), poste non technique, OU hors zone géographique.
 
-If non_us_only, you MAY still produce a SCORE based on tech-stack fit (for audit), but the
-eligibility tag is what determines whether the application proceeds.
+RÈGLES COMPLÉMENTAIRES :
+- Le candidat cherche un STAGE (~6 mois). Un poste senior/confirmé ou de management sans dimension junior/stage → 3 max.
+- Les postes non techniques (commercial, avant-vente, marketing, RH, design, recrutement) → 1-2 quel que soit le reste.
+- Valorise : Active Directory, Entra ID, Azure/M365, intégration IT, infrastructure, réseau, sécurité, PowerShell, scripting, virtualisation, gestion de projet.
+- Distingue compétences REQUISES et SOUHAITÉES ; ne pénalise que l'absence de compétences requises.
+- Valorise l'expérience transférable (projets, administration système, sécurité, cloud) même acquise en formation ou en projet étudiant.
 
-SCORING CRITERIA:
-- 10: Near-perfect IC engineering match. The role is a software/platform/infrastructure engineer position requiring the candidate's exact stack (Go/Kotlin/Python/Java, distributed systems, K8s). Seniority aligns (Senior/Staff/Principal). The candidate would be a top-tier applicant with minimal gaps.
-- 9: Excellent engineering match. Strong alignment on tech stack and seniority, with 1-2 gaps in secondary skills or slightly different domain.
-- 7-8: Good engineering match. Candidate has most required technical skills. Minor gaps in specific frameworks or domain experience, easily bridged.
-- 5-6: Moderate match. The role is engineering but uses a different primary stack, or there's a seniority mismatch (e.g., junior role or executive-only role with no IC component).
-- 3-4: Weak match. Engineering role but wrong specialization (frontend-only, mobile, ML research, data science), or a non-engineering role with some technical overlap.
-- 1-2: Poor match. Non-engineering role (recruiting, design, marketing, product management, sales), completely different field, OR non-US geographic restriction.
+Tu DOIS produire les quatre lignes ci-dessous. Ne saute pas REASONING.
 
-ADDITIONAL RULES:
-- Non-engineering roles (recruiters, designers, PMs, marketing, sales, executive search) score 1-2 MAX regardless of seniority or domain.
-- Roles requiring a specific language the candidate doesn't know (Rust, C++, Ruby, Scala, Clojure) as the PRIMARY requirement score 4-6 max depending on transferability.
-- "CTO" or "VP Engineering" roles that are purely management with no IC engineering component score 5-6 max.
-- LOCATION is N/A: check the description for any office/city requirement. If the description implies onsite in a specific US city outside Seattle/Bellevue/Kirkland/Redmond, cap at 7.
-- Distinguish REQUIRED skills from NICE-TO-HAVE. Only penalize for missing required skills.
-- Value transferable experience: workflow orchestration, distributed systems, microservices, developer platforms transfer across domains.
-
-You MUST include all four lines below. Do not skip REASONING.
-
-ELIGIBILITY: [eligible|non_us_only]
+ELIGIBILITY: [eligible|hors_zone]
 SCORE: [1-10]
-KEYWORDS: [comma-separated ATS keywords from the job description that match or could match the candidate]
-REASONING: [2-3 sentences explaining the score, what matched well, and any gaps. If non_us_only, name the country/region.]"""
+KEYWORDS: [mots-clés ATS de l'offre, séparés par des virgules, qui correspondent ou pourraient correspondre au candidat]
+REASONING: [2-3 phrases expliquant la note, ce qui correspond et les écarts. Si hors_zone, nomme le pays/la région.]"""
 
 
-# ── Rule-based pre-filter (catches obvious ineligible before LLM call) ─────
+# ── Pré-filtre basé sur des règles (évite un appel LLM pour les cas évidents) ─
 #
-# Patterns validated 2026-04-23 against 5,938 historical scored jobs.
-# Any pattern that would reject more than 1-2 jobs scored >=8 is omitted
-# (those rare false positives tend to be LLM mis-scores anyway — jobs
-# titled "Junior" / "Intern" don't belong in a Senior/Staff queue).
+# Marché français, recherche de STAGE. On ne rejette que les cas clairs :
+#   - rôle manifestement hors cible (non technique : commercial, RH, design…),
+#   - offre restreinte à une zone géographique qui EXCLUT la France.
+# L'Europe / EMEA incluent la France → NON rejetés. Le LLM tranche le reste.
+# Contrairement à la version US d'origine, les titres « stage / junior /
+# alternance / graduate » ne sont PLUS rejetés : ce sont les cibles du candidat.
 
-# Patterns that make a job ineligible regardless of tech stack.
-# Checked against title + location field only (not full description, to avoid
-# false positives from US companies mentioning global offices).
-_INELIGIBLE_TITLE_PATTERNS = re.compile(
-    # Explicit non-US regions in title
-    r'\bEMEA\b'
-    r'|\bAPAC\b'
-    r'|\bLATAM\b'
-    r'|\bMENA\b'
-    r'|\bTOLA\b'                    # sales region: Texas/Oklahoma/Louisiana/Arkansas
-    r'|\bANZ\b'                     # Australia/New Zealand
-    r'|\bNordics\b'
-    r'|\bEU[- ]only\b'
-    r'|\bUK[- ]only\b'
-    r'|\bEurope[- ]only\b'
-    r'|\(m/[fw]/d\)'                # German job title suffix (m/f/d) or (m/w/d)
-    r'|\bm/[fw]/d\b'
-    r'|\bOnly hiring in\b'
-    # Seniority mismatches (user is Senior/Staff/Principal level)
-    r'|\bJunior\b'
-    r'|\bIntern(ship)?\b'
-    r'|\bFresher\b'
-    r'|\bEntry[- ]?Level\b'
-    r'|\bNew[- ]Grad\b'
-    r'|\bTrainee\b'
-    r'|\bApprentice\b'
-    # Sales-adjacency (not IC engineering)
-    r'|\bSales Engineer\b'
-    r'|\bSolutions Engineer\b'
-    r'|\bPre[- ]?[Ss]ales\b'
-    r'|\bCustomer Success Engineer\b'
-    # Retail / warehouse / service roles (filter out Costco + similar noise)
-    r'|\bCashier\b|\bBaker\b|\bCake Decorator\b|\bButcher\b|\bMeat Cutter\b'
-    r'|\bGas Station Attendant\b|\bPharmacy Technician\b|\bHearing Aid Dispenser\b'
-    r'|\bStocker\b|\bForklift\b|\bWarehouse Associate\b|\bTruck Driver\b'
-    r'|\bBakery Clerk\b|\bDeli Clerk\b|\bProduce Clerk\b|\bMember Service\b'
-    r'|\bOptician\b|\bOptical\b'
-    # More seniority — "Graduate Developer"/"Graduate Software Engineer" patterns
-    # Protected: "Graduate School", "Graduate Student" (those don't appear in job titles)
-    r'|\bGraduate\b'
-    # Non-engineering roles
-    r'|\bRecruiter\b'
-    r'|\bTalent Acquisition\b|\bTalent Scout\b|\bTalent Sourcer\b'
-    r'|\bAccount Manager\b|\bAccount Executive\b'
+# Rôles clairement hors cible pour un stage en intégration IT & cybersécurité.
+# Vérifié sur le TITRE uniquement.
+_OFF_TARGET_TITLE = re.compile(
+    r'\bSales Engineer\b|\bSolutions? Engineer\b|\bPre[- ]?[Ss]ales\b'
+    r'|\bCustomer Success\b|\bAccount Manager\b|\bAccount Executive\b'
+    r'|\bRecruiter\b|\bTalent Acquisition\b|\bTalent Sourcer\b'
     r'|\bUX Designer\b|\bUI Designer\b|\bProduct Designer\b|\bGraphic Designer\b'
-    # Specialist IC roles outside the target stack (mobile, legacy enterprise)
-    r'|\bAndroid Engineer\b|\biOS Engineer\b|\bMobile Engineer\b'
-    r'|\bSalesforce Developer\b|\bApex Developer\b'
-    r'|\bMainframe Engineer\b|\bCOBOL Developer\b|\bTIBCO\b',
+    r'|\bCommerciale?\b|\bBusiness Developer\b|\bVendeur\b|\bVendeuse\b'
+    r'|\bCaissi[èe]re?\b|\bCashier\b|\bBaker\b|\bButcher\b'
+    r'|\bStocker\b|\bWarehouse Associate\b|\bChargé\(?e?\)? de recrutement\b',
     re.IGNORECASE,
 )
 
-# Patterns checked against the location field specifically.
-# Location field explicitly lists a non-US country name → ineligible.
-_INELIGIBLE_LOCATION_PATTERNS = re.compile(
-    # Regions
-    r'\bEMEA\b'
-    r'|\bAPAC\b'
-    r'|\bEurope\b'
-    # Europe
-    r'|\bGermany\b|\bNetherlands\b|\bFrance\b|\bSpain\b|\bItaly\b'
-    r'|\bPoland\b|\bUkraine\b|\bCzech\b|\bPortugal\b|\bIreland\b'
-    r'|\bDenmark\b|\bSweden\b|\bNorway\b|\bFinland\b|\bBelgium\b'
-    r'|\bSwitzerland\b|\bAustria\b|\bRomania\b|\bHungary\b|\bCroatia\b'
-    r'|\bGreece\b|\bBulgaria\b|\bSerbia\b|\bSlovakia\b|\bSlovenia\b'
-    r'|\bEstonia\b|\bLatvia\b|\bLithuania\b'
-    # Asia
-    r'|\bIndia\b|\bSingapore\b|\bJapan\b|\bVietnam\b|\bThailand\b'
-    r'|\bPhilippines\b|\bIndonesia\b|\bKorea\b|\bTaiwan\b|\bHong Kong\b'
-    r'|\bChina\b|\bPakistan\b|\bBangladesh\b|\bMalaysia\b'
-    # Latin America
-    r'|\bBrazil\b|\bBrasil\b|\bMexico\b|\bMéxico\b|\bArgentina\b'
-    r'|\bChile\b|\bColombia\b|\bPeru\b|\bUruguay\b'
-    # Middle East / Africa
-    r'|\bEgypt\b|\bNigeria\b|\bKenya\b|\bSouth Africa\b|\bIsrael\b'
-    r'|\bTurkey\b|\bTürkiye\b|\bUAE\b|\bSaudi Arabia\b'
-    # Oceania
-    r'|\bAustralia\b|\bNew Zealand\b',
+# Marqueurs de région, dans le TITRE, qui excluent la France.
+# (EMEA / Europe NON listés : ils incluent la France.)
+_OUT_OF_ZONE_TITLE = re.compile(
+    r'\bAPAC\b|\bLATAM\b|\bMENA\b|\bANZ\b|\bTOLA\b|\bNordics?\b'
+    r'|\bUS[- ]only\b|\bUSA?[- ]only\b|\bUK[- ]only\b|\bU\.S\.[- ]only\b'
+    r'|\bOnly hiring in\b',
     re.IGNORECASE,
 )
 
-# Description-level non-US patterns. Scans the full description (capped at
-# 6000 chars by the caller). Patterns intentionally narrow — must explicitly
-# RESTRICT to a non-US country, not merely mention global offices.
-# Tightened 2026-04-30 after Twilio UK/Canada slipped through the 800-char head.
-_INELIGIBLE_DESC_PATTERNS = re.compile(
-    r'Remote\s*[\(\-—–]\s*(EMEA|Europe|EU|UK|United\s+Kingdom|Germany|India|Canada|Ireland|Netherlands|Brazil|Mexico|Argentina|Colombia|Australia|New\s+Zealand)'
-    r'|EMEA\s*(only|region|remote|based)'
-    r'|(Europe|European)\s*(only|Time\s*Zone|timezone|based|remote)'
-    # Belt-and-suspenders: catches "based in (the) UK", "based in Europe", etc.
-    r'|based\s+in\s+(the\s+)?(Europe|EU|UK|United\s+Kingdom|Germany|India|Netherlands|Canada|Ireland|France|Spain|Italy|Brazil|Mexico|Australia|New\s+Zealand|Singapore|Japan|Israel|South\s+Africa|Portugal|Poland|Romania)'
-    r'|will\s+be\s+remote\s+and\s+based\s+in\s+(the\s+)?(UK|United\s+Kingdom|Canada|Ireland|Germany|Europe|EMEA|India)'
-    # Canadian-province patterns (Twilio L3 example)
-    r'|Remote\s+(in|from|—|-)\s*(Ontario|British\s+Columbia|Alberta|Quebec|Manitoba|Nova\s+Scotia|Saskatchewan)'
-    r'|Ontario,\s*British\s+Columbia'
-    # UK/Canada right-to-work questions on the form (often mirrored in JD)
-    r"|right\s+to\s+work\s+in\s+(the\s+)?(UK|United\s+Kingdom|Canada|Ireland|EU|European\s+Union)"
-    r"|requires?\s+(the\s+)?right\s+to\s+work\s+in\s+(the\s+)?(UK|United\s+Kingdom|Canada|Ireland|EU)"
-    # Timezone restrictions
-    r'|CET\s+timezone'
-    r'|GMT[+\-]\d+\s+timezone'
-    r'|IST\s+timezone',
+# Indices « France / zone atteignable » qui ANNULENT un rejet géographique.
+# Pas de \bEU\b / \bUE\b (collision avec « eu » / « ue »), ni « remote » seul.
+_FRANCE_HINT = re.compile(
+    r'\bFrance\b|\bfran[cç]\w*\b'                       # France, français, francophone
+    r'|\bParis\b|\bLyon\b|\bMarseille\b|\bToulouse\b|\bLille\b|\bBordeaux\b'
+    r'|\bNantes\b|\bStrasbourg\b|\bRennes\b|\bGrenoble\b|\bMontpellier\b'
+    r'|\bOrl[ée]ans\b|\bBourges\b|\bBlois\b|\bCh[âa]teauroux\b'
+    r'|\bEurope\b|\bEMEA\b|\bt[ée]l[ée]travail\b',
     re.IGNORECASE,
 )
 
-# Window scanned for description-level patterns. Bumped from 800 to 6000 chars
-# 2026-04-30 — Twilio buried the UK restriction in a paragraph below the
-# requirements list, past the 800-char head.
+# Codes d'État américains en fin de localisation (« Seattle, WA »).
+# SENSIBLE À LA CASSE : on ne veut PAS matcher « or », « in », « me »… en minuscules.
+_US_STATE_CODE = re.compile(
+    r',\s?(?:A[LKZR]|C[AOT]|DE|FL|GA|HI|I[ADLN]|K[SY]|LA|M[ADEINOST]'
+    r'|N[CDEHJMVY]|O[HKR]|PA|RI|S[CD]|T[NX]|UT|V[AT]|W[AIVY]|DC)\b'
+)
+
+# Pays / villes clairement hors zone, par nom (localisation).
+_OUT_OF_ZONE_LOCATION = re.compile(
+    r'\bUnited States\b|\bUSA\b|\bU\.S\.A?\.?\b'
+    r'|\bUnited Kingdom\b|\bLondon\b'
+    r'|\bIndia\b|\bBangalore\b|\bBengaluru\b|\bHyderabad\b|\bPune\b'
+    r'|\bSingapore\b|\bCanada\b|\bToronto\b|\bAustralia\b|\bNew Zealand\b'
+    r'|\bBrazil\b|\bBrasil\b|\bMexico\b|\bArgentina\b'
+    r'|\bJapan\b|\bChina\b|\bKorea\b|\bPhilippines\b|\bIndonesia\b|\bVietnam\b'
+    r'|\bUAE\b|\bDubai\b|\bSaudi\b|\bIsrael\b|\bTel Aviv\b'
+    r'|\bGermany\b|\bBerlin\b|\bMunich\b|\bSpain\b|\bMadrid\b|\bBarcelona\b'
+    r'|\bItaly\b|\bMilan\b|\bNetherlands\b|\bAmsterdam\b'
+    r'|\bSeattle\b|\bNew York\b|\bSan Francisco\b|\bAustin\b|\bBoston\b'
+    r'|\bChicago\b|\bAtlanta\b|\bDenver\b|\bDallas\b',
+    re.IGNORECASE,
+)
+
+# Restrictions explicites dans la DESCRIPTION (autorisation de travail hors France).
+_OUT_OF_ZONE_DESC = re.compile(
+    r'right\s+to\s+work\s+in\s+(the\s+)?(United\s+States|US|USA|U\.S\.|UK|United\s+Kingdom|Canada|India|Australia|Ireland)'
+    r'|authori[sz]ed\s+to\s+work\s+in\s+the\s+(US|United\s+States|UK|United\s+Kingdom)'
+    r'|must\s+be\s+(located|based|residing)\s+in\s+(the\s+)?(United\s+States|US|USA|UK|United\s+Kingdom|Canada|India|Australia)'
+    r'|US[- ]based\s+(only|position|role|candidates)'
+    r'|Remote\s*[\(\-—–]\s*(APAC|LATAM|MENA|India|US|USA|United\s+States|Canada|UK|United\s+Kingdom)',
+    re.IGNORECASE,
+)
+
+# Fenêtre scannée pour les motifs au niveau de la description.
 _DESC_SCAN_CHARS = 6000
 
 
 def _check_ineligible(job: dict) -> str | None:
-    """Return an ineligibility reason if the job is obviously non-US, else None.
+    """Renvoie une raison d'inéligibilité si l'offre est clairement hors cible
+    ou hors zone (géographie excluant la France), sinon None.
 
-    Checked before the LLM call to save tokens and ensure consistency.
-    Scans title, location field, and the first ``_DESC_SCAN_CHARS`` of the
-    description.
+    Appelé avant le LLM pour économiser des tokens. Ne rejette jamais une offre
+    qui mentionne la France / l'Europe / le télétravail, ni un titre de stage.
     """
     title = job.get("title") or ""
     location = job.get("location") or ""
     desc_head = (job.get("full_description") or "")[:_DESC_SCAN_CHARS]
 
-    if _INELIGIBLE_TITLE_PATTERNS.search(title):
-        return f"non-US geography in title: {title}"
-    if location and _INELIGIBLE_LOCATION_PATTERNS.search(location):
-        return f"non-US location field: {location}"
-    m = _INELIGIBLE_DESC_PATTERNS.search(desc_head)
-    if m:
-        return f"non-US geography in description: {m.group(0)[:80]}"
+    if _OFF_TARGET_TITLE.search(title):
+        return f"hors cible (rôle non technique) : {title[:80]}"
+
+    if _OUT_OF_ZONE_TITLE.search(title) and not _FRANCE_HINT.search(title):
+        return f"hors zone (titre) : {title[:80]}"
+
+    if location and not _FRANCE_HINT.search(location) and (
+        _US_STATE_CODE.search(location) or _OUT_OF_ZONE_LOCATION.search(location)
+    ):
+        return f"hors zone (localisation) : {location[:80]}"
+
+    if not _FRANCE_HINT.search(desc_head):
+        m = _OUT_OF_ZONE_DESC.search(desc_head)
+        if m:
+            return f"hors zone (description) : {m.group(0)[:80]}"
+
     return None
 
 
@@ -214,7 +171,7 @@ def _parse_score_response(response: str) -> dict:
 
     Returns:
         {"score": int, "keywords": str, "reasoning": str, "eligibility": str}
-        eligibility is one of: 'eligible' | 'non_us_only'.
+        eligibility is one of: 'eligible' | 'hors_zone'.
         Older models that omit ELIGIBILITY default to 'eligible' (preserves
         prior behavior; new prompt requires the line so absence is rare).
     """
@@ -228,8 +185,8 @@ def _parse_score_response(response: str) -> dict:
         if line.startswith("ELIGIBILITY:"):
             value = line.replace("ELIGIBILITY:", "").strip().lower()
             value = re.sub(r"[\[\]\s]+", "_", value).strip("_")
-            if "non" in value and "us" in value:
-                eligibility = "non_us_only"
+            if "hors" in value or "zone" in value or ("non" in value and "us" in value):
+                eligibility = "hors_zone"
             else:
                 eligibility = "eligible"
         elif line.startswith("SCORE:"):
@@ -248,20 +205,34 @@ def _parse_score_response(response: str) -> dict:
 
 
 def _build_candidate_summary(profile: dict) -> str:
-    """Build a candidate summary string from profile for the scoring prompt."""
-    exp = profile.get("experience", {})
-    boundary = profile.get("skills_boundary", {})
-    years = exp.get("years_of_experience_total", "several")
-    current_title = exp.get("current_job_title", "Software Engineer")
-    target = exp.get("target_role", "Software Engineer")
-    languages = boundary.get("languages", [])
-    platforms = boundary.get("platforms", [])
-    parts = [f"{current_title} with {years} years experience."]
+    """Construit un résumé candidat (FR) à partir du profil, pour le scoring.
+
+    Lit le profil avec des valeurs de repli pour un étudiant en recherche de
+    stage ; les champs dédiés au stage seront formalisés dans le schéma de profil.
+    """
+    exp = profile.get("experience", {}) or {}
+    boundary = profile.get("skills_boundary", {}) or {}
+    stage = profile.get("internship", {}) or profile.get("stage", {}) or {}
+    personal = profile.get("personal", {}) or {}
+
+    level = (exp.get("current_job_title") or exp.get("education_level")
+             or "Étudiant ingénieur en cybersécurité (Bac+4/5)")
+    school = exp.get("school") or personal.get("school") or ""
+    target = exp.get("target_role") or "stage en intégration IT & cybersécurité"
+    languages = boundary.get("languages", []) or []
+    platforms = boundary.get("platforms", []) or []
+
+    head = level + (f" à {school}" if school else "")
+    parts = [f"{head}, recherche un {target}."]
+
+    duration = stage.get("duration") or "6 mois"
+    start = stage.get("start_date") or ""
+    parts.append(f"Stage de {duration}{(' à partir de ' + start) if start else ''}.")
+
     if languages:
-        parts.append(f"Primary stack: {', '.join(languages[:8])}.")
+        parts.append(f"Compétences : {', '.join(languages[:10])}.")
     if platforms:
-        parts.append(f"Platforms: {', '.join(platforms[:6])}.")
-    parts.append(f"Targets: {target}.")
+        parts.append(f"Environnements : {', '.join(platforms[:8])}.")
     return " ".join(parts)
 
 
@@ -278,17 +249,17 @@ def score_job(resume_text: str, job: dict, profile: dict | None = None) -> dict:
     if profile is None:
         profile = load_profile()
 
-    # Rule-based pre-filter: catch obvious non-US ineligible jobs before LLM call.
-    # Tags eligibility=non_us_only so downstream stages skip the job; the score
-    # is still recorded so audit views can see the original LLM-style severity.
+    # Pré-filtre : écarte les offres clairement hors cible / hors zone avant
+    # l'appel LLM. Tag eligibility=hors_zone → les étapes suivantes l'ignorent ;
+    # le score est tout de même enregistré pour l'audit.
     ineligible_reason = _check_ineligible(job)
     if ineligible_reason:
-        log.info("Pre-filter INELIGIBLE (non_us_only): %s — %s", (job.get("title") or "?")[:60], ineligible_reason)
+        log.info("Pré-filtre HORS ZONE/CIBLE : %s — %s", (job.get("title") or "?")[:60], ineligible_reason)
         return {
             "score": 2,
             "keywords": "",
-            "reasoning": f"Ineligible: {ineligible_reason}. Candidate is US-based.",
-            "eligibility": "non_us_only",
+            "reasoning": f"Inéligible : {ineligible_reason}.",
+            "eligibility": "hors_zone",
         }
 
     try:
@@ -346,12 +317,12 @@ def _flush_score_batch(conn, batch: list[dict], now: str) -> None:
                 (r["score"], f"{r['keywords']}\n{r['reasoning']}", now, eligibility,
                  r["url"]),
             )
-            # Eligibility-driven state transition. Non-US roles go straight to
-            # `archived` (terminal) so tailor/cover/apply never pick them up,
-            # bypassing the scored→tailored→ready_to_apply chain entirely.
-            if eligibility == "non_us_only":
+            # Transition pilotée par l'éligibilité. Les offres hors zone/cible
+            # vont directement en `archived` (terminal) : tailor/cover/apply ne
+            # les reprennent jamais, court-circuitant la chaîne habituelle.
+            if eligibility == "hors_zone":
                 transition_state(conn, r["url"], "archived",
-                                 reason="non_us_only employer/role",
+                                 reason="offre hors zone / hors cible",
                                  metadata={"score": r["score"],
                                            "eligibility": eligibility},
                                  force=True)

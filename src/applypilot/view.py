@@ -42,7 +42,7 @@ STAGE_META = {
     "blocked_auth":         ("Auth Barrier",      "#f59e0b", "#fef3c7"),
     "blocked_technical":    ("Technical Issue",   "#f97316", "#ffedd5"),
     "archived_ineligible":  ("Ineligible",        "#6b7280", "#e5e7eb"),
-    "non_us_only":          ("Non-US Only",       "#6b7280", "#e5e7eb"),
+    "hors_zone":            ("Hors zone",         "#6b7280", "#e5e7eb"),
     "archived_expired":     ("Expired",           "#6b7280", "#e5e7eb"),
     "archived_platform":    ("Platform Blocked",  "#ef4444", "#fecaca"),
     "archived_no_url":      ("No URL",            "#6b7280", "#e5e7eb"),
@@ -130,10 +130,10 @@ def _classify_job(row) -> tuple[str, str]:
         if category == "manual_only":
             return "manual_only", "archive"
 
-    # Eligibility gate: non-US-only roles are terminal-archived by the
-    # scorer — never show them as actionable, regardless of fit_score.
-    if _safe_get(row, "eligibility") == "non_us_only":
-        return "non_us_only", "archive"
+    # Garde-fou d'éligibilité : les offres hors zone sont archivées (terminal)
+    # par le scorer — jamais affichées comme actionnables, quel que soit le score.
+    if _safe_get(row, "eligibility") == "hors_zone":
+        return "hors_zone", "archive"
 
     # Pre-apply pipeline stages (no category set)
     if row["cover_letter_path"] and not row["apply_error"]:
