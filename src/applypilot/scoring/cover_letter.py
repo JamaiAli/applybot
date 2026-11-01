@@ -59,53 +59,40 @@ def _build_cover_letter_prompt(profile: dict) -> str:
     if real_metrics:
         metrics_hint = f"\nReal metrics to use: {', '.join(real_metrics)}"
 
-    return f"""Write a cover letter for {sign_off_name}. The goal is to get an interview.
+    return f"""Rédige une lettre de motivation en français pour {sign_off_name}, candidat à un STAGE. Objectif : décrocher un entretien.
 
-STRUCTURE: 4 paragraphs. TARGET 300-400 words; MINIMUM 260 words (Jobscan 3.4x interview-rate sweet spot is 250-400). Letters under 260 words get rejected automatically.
+STRUCTURE : 3 paragraphes de corps (modèle « Vous / Moi / Nous ») puis une formule de politesse. CIBLE 250-380 mots ; MINIMUM 200 mots.
 
-PARAGRAPH 1 — HOOK (4-6 sentences, ~80 words): Open with a specific thing YOU built that solves THEIR problem. Identify the problem they're hiring to solve (infer from the job description) and name the work you've done that directly addresses it. Include enough context that the reader understands the scope and impact. Not "I'm excited about this role." Not "This role aligns with my experience." Start with the work.
+PARAGRAPHE 1 — VOUS (3-5 phrases) : accroche concrète sur l'entreprise et le besoin du poste (déduis-le de l'offre). Montre que tu as lu l'annonce : nomme la mission, le contexte technique ou l'équipe. Pas de « Je me permets de vous écrire ». Pas de « Je suis vivement intéressé ».
 
-PARAGRAPH 2 — EVIDENCE (4-6 sentences, ~120 words): Pick 2 achievements from the resume that are MOST relevant to THIS job. For each, name the problem, the concrete action you took (specific tools, architecture decisions), and the quantified outcome. Use numbers. Frame each as solving their problem, not listing your accomplishments.{projects_hint}{metrics_hint}
+PARAGRAPHE 2 — MOI (4-6 phrases) : prends 2 éléments de ton parcours (projets, TP, expériences) les PLUS pertinents pour CE stage. Pour chacun : le problème, ce que tu as concrètement fait (outils, technos précises), le résultat. Chiffre quand c'est possible. Relie chaque élément au besoin du poste, ne liste pas tes accomplissements.{projects_hint}{metrics_hint}
 
-PARAGRAPH 3 — COMPANY FIT (3-4 sentences, ~70 words): Reference one specific thing about the company from the job description (a product, a technical challenge, a team structure). Connect it to your experience with a concrete parallel, not a generic nod. Show you've read the posting and that you've solved a similar shape of problem.
-If COMPANY is marked unknown, infer the employer from the job description. If the description doesn't name it either, write about the team's product and problem domain WITHOUT naming any company. NEVER treat the job board the listing came from (LinkedIn, Indeed, etc.) as the employer.
+PARAGRAPHE 3 — NOUS (3-4 phrases) : ce que ta contribution apporterait au poste et à l'équipe, et en quoi ce stage s'inscrit dans ton projet (intégration IT & cybersécurité, Active Directory / Entra ID). Fais un lien concret avec un élément précis de l'offre, pas un signe de tête générique.
+Si l'entreprise (COMPANY) est « unknown », déduis-la de la description. Si elle n'y figure pas non plus, parle du produit et du domaine SANS nommer d'entreprise. Ne traite JAMAIS le site d'annonces (LinkedIn, Indeed…) comme l'employeur.
 
-PARAGRAPH 4 — CLOSE (2 sentences, ~30 words): Offer to go deeper on one or two SPECIFIC topics from your evidence paragraph, naming the actual system, migration, or metric. Write the offer in your own words; do not use stock closers ("Happy to walk through...", "I'd welcome the chance to discuss..."). Then sign off.
+FORMULE DE POLITESSE (2 phrases) : indique ta disponibilité (durée du stage, date de début) et propose un entretien, puis termine par une formule française standard, par exemple « Je vous prie d'agréer, Madame, Monsieur, l'expression de mes salutations distinguées. »
 
-BANNED WORDS/PHRASES (using ANY of these = instant rejection):
-"resonated", "aligns with", "passionate", "eager", "eager to", "excited to apply", "I am confident",
-"I believe", "proven track record", "strong track record", "cutting-edge", "innovative", "innovative solutions",
-"leverage", "leveraging", "robust", "driven", "dedicated", "committed to",
-"I look forward to hearing from you", "great fit", "unique opportunity",
-"commitment to excellence", "dynamic team", "fast-paced environment",
-"I am writing to express", "caught my eye", "caught my attention"
+MOTS / TOURNURES INTERDITS (en utiliser UN = rejet immédiat) :
+« dynamique », « rigoureux », « autonome », « motivé », « sérieux », « passionné », « polyvalent »,
+« force de proposition », « à l'écoute », « proactif », « à la pointe »,
+« n'hésitez pas à me contacter », « Je me permets de », « Je suis vivement intéressé »,
+« mener à bien », « relever ce défi », « au carrefour de »
 
-BANNED PUNCTUATION: No em dashes. Use commas or periods.
+PONCTUATION INTERDITE : pas de tiret cadratin (—). Virgules ou points.
 
-VOICE:
-- Write like a real engineer emailing someone they respect. Not formal, not casual. Just direct.
-- NEVER narrate or explain what you're doing. BAD: "This demonstrates my commitment to X." GOOD: Just state the fact and move on.
-- NEVER hedge. BAD: "might address some of your challenges." GOOD: "solves the same problem your team is facing."
-- NEVER use "Also," to start a sentence. NEVER use "Furthermore," or "Additionally,".
-- Every sentence should contain either a number, a tool name, or a specific outcome. If it doesn't, cut it.
-- Read it out loud. If it sounds like a robot wrote it, rewrite it.
+TON :
+- Écris comme un étudiant sérieux et direct, pas un robot. Phrases claires, français correct.
+- Ne te décris pas (« cela démontre ma rigueur ») : énonce le fait et avance.
+- Ne reste pas vague (« qui pourrait correspondre ») : « qui répond au besoin de … ».
+- Chaque phrase doit apporter un fait, un outil ou un résultat concret. Sinon, coupe-la.
 
-ADDITIONAL BANNED PHRASES:
-"This demonstrates", "This reflects", "This showcases", "This shows",
-"This experience translates", "which aligns with", "which is relevant to",
-"as demonstrated by", "showing experience with", "reflecting the need for",
-"which directly addresses", "I have experience with",
-"Also,", "Furthermore,", "Additionally,", "Moreover,",
-"Happy to walk through", "demonstrate" (any form: demonstrates, demonstrated, demonstrating),
-"resonate" (any form), "align with" (any form: aligns with, aligned with)
+INVENTION = REJET IMMÉDIAT :
+Les seuls outils/compétences réels du candidat sont : {skills_str}.
+Ne mentionne AUCUN outil hors de cette liste. Si l'offre en demande d'autres, parle du travail réalisé, pas de l'outil.
 
-FABRICATION = INSTANT REJECTION:
-The candidate's real tools are ONLY: {skills_str}.
-Do NOT mention ANY tool not in this list. If the job asks for tools not listed, talk about the work you did, not the tools.
+Signature : seulement « {sign_off_name} »
 
-Sign off: just "{sign_off_name}"
-
-Output ONLY the letter. Start with "Dear Hiring Manager," end with the name."""
+Produis UNIQUEMENT la lettre. Commence par « Madame, Monsieur, » et termine par la formule de politesse suivie du nom."""
 
 
 # ── Core Generation ──────────────────────────────────────────────────────

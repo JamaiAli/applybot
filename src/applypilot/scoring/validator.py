@@ -44,6 +44,13 @@ CL_BANNED_PATTERNS: list[tuple[str, str]] = [
     ("demonstrate", r"\bdemonstrat\w*\b"),
     ("happy to walk through", r"\bhappy to walk (you\s+)?through\b"),
     ("resonate", r"\bresonat\w*\b"),
+    # Clichés français de lettre de motivation (tier erreur -> force une régénération).
+    ("dynamique", r"\bdynamique\b"),
+    ("rigoureux", r"\brigoureux\b|\brigoureuse\b"),
+    ("autonome", r"\bautonome\b"),
+    ("force de proposition", r"\bforce de proposition\b"),
+    ("n'hésitez pas", r"n['’]h[ée]sitez pas"),
+    ("je me permets", r"\bje me permets\b"),
 ]
 
 LLM_LEAK_PHRASES: list[str] = [
@@ -366,10 +373,10 @@ def validate_cover_letter(text: str) -> dict:
     if found_leaks:
         errors.append(f"LLM self-talk: '{found_leaks[0]}'")
 
-    # 5. Must start with "Dear"
-    stripped = text.strip()
-    if not stripped.lower().startswith("dear"):
-        errors.append("Must start with 'Dear Hiring Manager,'")
+    # 5. Must open with a proper salutation (FR « Madame, Monsieur, » or EN "Dear").
+    stripped = text.strip().lower()
+    if not stripped.startswith(("madame", "monsieur", "dear")):
+        errors.append("Doit commencer par « Madame, Monsieur, » (ou 'Dear' en anglais).")
 
     # 6. Structure: prompt demands 4 body paragraphs (hook, evidence, company
     # fit, close). "Substantial" = >= 15 words, which excludes the salutation
