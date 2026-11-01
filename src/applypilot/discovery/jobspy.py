@@ -1,4 +1,4 @@
-"""JobSpy-based job discovery: searches Indeed, LinkedIn, Glassdoor, ZipRecruiter.
+"""JobSpy-based job discovery: searches Indeed, Glassdoor (LinkedIn disabled: ToS).
 
 Uses python-jobspy to scrape multiple job boards, deduplicates results,
 parses salary ranges, and stores everything in the ApplyPilot database.
@@ -373,7 +373,10 @@ def search_jobs(
         # zip_recruiter removed 2026-06-10: Cloudflare-blocked, 403
         # "forbidden aa" on 100% of requests; python-jobspy 1.1.82 is
         # the latest release and has no fix. Re-add if a fix ships.
-        sites = ["indeed", "linkedin"]
+        sites = ["indeed"]
+    # LinkedIn automation is disabled project-wide (ToS / ban risk): strip it
+    # even when a config or override still lists it.
+    sites = [s for s in sites if s.lower() != "linkedin"] or ["indeed"]
 
     proxy_config = parse_proxy(proxy) if proxy else None
 
@@ -395,9 +398,6 @@ def search_jobs(
 
     if proxy_config:
         kwargs["proxies"] = [proxy_config["jobspy"]]
-
-    if "linkedin" in sites:
-        kwargs["linkedin_fetch_description"] = True
 
     try:
         df = scrape_jobs(**kwargs)
@@ -444,7 +444,9 @@ def _full_crawl(
         # zip_recruiter removed 2026-06-10: Cloudflare-blocked, 403
         # "forbidden aa" on 100% of requests; python-jobspy 1.1.82 is
         # the latest release and has no fix. Re-add if a fix ships.
-        sites = ["indeed", "linkedin"]
+        sites = ["indeed"]
+    # LinkedIn automation is disabled project-wide (ToS / ban risk).
+    sites = [s for s in sites if s.lower() != "linkedin"] or ["indeed"]
 
     # Build search combinations from config
     queries = search_cfg.get("queries", [])

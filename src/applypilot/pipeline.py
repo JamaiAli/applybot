@@ -83,8 +83,8 @@ _UPSTREAM: dict[str, str | None] = {
 
 # Canonical name → description. Order determines default execution order.
 DISCOVERY_SOURCES: dict[str, str] = {
-    "jobspy":       "JobSpy aggregator (LinkedIn, Indeed, ZipRecruiter)",
-    "linkedin":     "LinkedIn only (via JobSpy)",
+    # LinkedIn disabled project-wide (ToS / ban risk) — see jobspy.py guard.
+    "jobspy":       "JobSpy aggregator (Indeed, etc. — LinkedIn disabled)",
     "indeed":       "Indeed only (via JobSpy)",
     "workday":      "Workday corporate career sites",
     "greenhouse":   "Greenhouse ATS public board API",
@@ -104,9 +104,9 @@ _SOURCE_ALIASES: dict[str, str] = {
     "dice":  "smartextract",  # dice is scraped via smartextract + sites.yaml
 }
 
-# Sources that are jobspy with a specific site filter
+# Sources that are jobspy with a specific site filter.
+# LinkedIn intentionally omitted: scraping it breaks LinkedIn's ToS (ban risk).
 _JOBSPY_SITE_SOURCES: dict[str, list[str]] = {
-    "linkedin": ["linkedin"],
     "indeed":   ["indeed"],
 }
 
@@ -153,7 +153,7 @@ def _run_discover(workers: int = 1, sources: list[str] | None = None) -> dict:
             console.print(f"  [red]JobSpy error:[/red] {e}")
             stats["jobspy"] = f"error: {e}"
 
-    # Site-specific JobSpy sources (dice, linkedin, indeed)
+    # Site-specific JobSpy sources (indeed)
     for source_name, sites in _JOBSPY_SITE_SOURCES.items():
         if source_name in active:
             console.print(f"  [cyan]JobSpy ({source_name})...[/cyan]")
