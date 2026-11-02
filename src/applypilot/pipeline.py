@@ -83,6 +83,7 @@ _UPSTREAM: dict[str, str | None] = {
 
 # Canonical name → description. Order determines default execution order.
 DISCOVERY_SOURCES: dict[str, str] = {
+    "francetravail": "France Travail — Offres d'emploi v2 API (stages FR)",
     # LinkedIn disabled project-wide (ToS / ban risk) — see jobspy.py guard.
     "jobspy":       "JobSpy aggregator (Indeed, etc. — LinkedIn disabled)",
     "indeed":       "Indeed only (via JobSpy)",
@@ -102,6 +103,8 @@ _SOURCE_ALIASES: dict[str, str] = {
     "hn":    "hackernews",
     "smart": "smartextract",
     "dice":  "smartextract",  # dice is scraped via smartextract + sites.yaml
+    "ft":            "francetravail",
+    "france_travail": "francetravail",
 }
 
 # Sources that are jobspy with a specific site filter.
@@ -141,6 +144,17 @@ def _run_discover(workers: int = 1, sources: list[str] | None = None) -> dict:
     run_all = sources is None
     active = list(DISCOVERY_SOURCES.keys()) if run_all else sources
     stats: dict = {s: None for s in active}
+
+    if "francetravail" in active:
+        console.print("  [cyan]France Travail (Offres d'emploi v2)...[/cyan]")
+        try:
+            from applypilot.discovery.francetravail import run_francetravail_discovery
+            run_francetravail_discovery(workers=workers)
+            stats["francetravail"] = "ok"
+        except Exception as e:
+            log.error("France Travail scraper failed: %s", e)
+            console.print(f"  [red]France Travail error:[/red] {e}")
+            stats["francetravail"] = f"error: {e}"
 
     if "jobspy" in active:
         console.print("  [cyan]JobSpy full crawl...[/cyan]")
