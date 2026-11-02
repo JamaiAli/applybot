@@ -58,12 +58,12 @@ def _build_fallback_chain(primary_model: str, quality: bool = False) -> list[Mod
     groq_url = "https://api.groq.com/openai/v1"
 
     if quality:
-        groq_models = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+        groq_models = ["openai/gpt-oss-120b", "qwen/qwen3.8-27b", "openai/gpt-oss-20b"]
         gemini_models = ["gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-3.5-flash"]
         openai_models = ["gpt-4.1-mini", "gpt-4.1-nano"]
         anthropic_models = ["claude-sonnet-4-5-20250514", "claude-haiku-4-5-20251001"]
     else:
-        groq_models = ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"]
+        groq_models = ["openai/gpt-oss-20b", "qwen/qwen3.8-27b", "openai/gpt-oss-120b"]
         gemini_models = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-3.1-flash-lite"]
         openai_models = ["gpt-4.1-nano", "gpt-4.1-mini"]
         anthropic_models = ["claude-haiku-4-5-20251001"]
@@ -120,7 +120,7 @@ def _detect_provider(quality: bool = False) -> tuple[str, str, str]:
     if groq_key and not local_url:
         return (
             "https://api.groq.com/openai/v1",
-            chosen_model or ("llama-3.3-70b-versatile" if quality else "llama-3.1-8b-instant"),
+            chosen_model or ("openai/gpt-oss-120b" if quality else "openai/gpt-oss-20b"),
             groq_key,
         )
     if gemini_key and not local_url:

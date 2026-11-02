@@ -270,7 +270,7 @@ def score_job(resume_text: str, job: dict, profile: dict | None = None) -> dict:
             f"TITLE: {job['title']}\n"
             f"COMPANY: {job['site']}\n"
             f"LOCATION: {job.get('location', 'N/A')}\n\n"
-            f"DESCRIPTION:\n{(job.get('full_description') or '')[:6000]}"
+            f"DESCRIPTION:\n{(job.get('full_description') or '')[:2500]}"
         )
 
         messages = [
@@ -279,7 +279,9 @@ def score_job(resume_text: str, job: dict, profile: dict | None = None) -> dict:
         ]
 
         client = get_client()
-        response = client.chat(messages, max_tokens=8192, temperature=0.2)
+        # Scoring output is ~4 short lines : un petit budget suffit et reste
+        # compatible avec les plafonds de jetons/minute des paliers gratuits.
+        response = client.chat(messages, max_tokens=2048, temperature=0.2)
         return _parse_score_response(response)
     except Exception as e:
         log.error("LLM error scoring job '%s': %s", (job or {}).get("title") or "?", e)
