@@ -83,6 +83,7 @@ _UPSTREAM: dict[str, str | None] = {
 
 # Canonical name → description. Order determines default execution order.
 DISCOVERY_SOURCES: dict[str, str] = {
+    "adzuna":       "Adzuna — agrégateur d'offres, API France (stages FR)",
     "francetravail": "France Travail — Offres d'emploi v2 API (stages FR)",
     # LinkedIn disabled project-wide (ToS / ban risk) — see jobspy.py guard.
     "jobspy":       "JobSpy aggregator (Indeed, etc. — LinkedIn disabled)",
@@ -144,6 +145,17 @@ def _run_discover(workers: int = 1, sources: list[str] | None = None) -> dict:
     run_all = sources is None
     active = list(DISCOVERY_SOURCES.keys()) if run_all else sources
     stats: dict = {s: None for s in active}
+
+    if "adzuna" in active:
+        console.print("  [cyan]Adzuna (API France)...[/cyan]")
+        try:
+            from applypilot.discovery.adzuna import run_adzuna_discovery
+            run_adzuna_discovery(workers=workers)
+            stats["adzuna"] = "ok"
+        except Exception as e:
+            log.error("Adzuna scraper failed: %s", e)
+            console.print(f"  [red]Adzuna error:[/red] {e}")
+            stats["adzuna"] = f"error: {e}"
 
     if "francetravail" in active:
         console.print("  [cyan]France Travail (Offres d'emploi v2)...[/cyan]")

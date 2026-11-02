@@ -122,3 +122,19 @@ france_travail:
   distance_km: 0          # rayon autour du département/commune — optionnel
   max_pages: 2            # pages de 150 offres par requête
   include_alternance: true
+
+# ── Adzuna (agrégateur d'offres, API France — gratuite et ouverte à tous) ───
+# Inscription libre sur https://developer.adzuna.com puis mets dans
+# ~/.applypilot/.env : ADZUNA_APP_ID / ADZUNA_APP_KEY.
+adzuna:
+  country: fr
+  queries:
+    - "stage cybersécurité"
+    - "stage administrateur systèmes et réseaux"
+    - "stage intégration IT"
+    - "stage Active Directory"
+  where: ""               # ville / département, optionnel
+  max_days_old: 30
+  max_pages: 3            # pages de results_per_page offres par requête
+  results_per_page: 50
+  include_alternance: true
