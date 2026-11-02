@@ -56,15 +56,15 @@ def _build_fallback_chain(primary_model: str, quality: bool = False) -> list[Mod
     # Gemini chains — use verified model IDs only
     if quality:
         gemini_models = [
-            "gemini-2.5-pro",
-            "gemini-2.5-flash",
-            "gemini-2.0-flash",
+            "gemini-3.1-pro-preview",
+            "gemini-3.8-flash",
+            "gemini-3.5-flash",
         ]
     else:
         gemini_models = [
-            "gemini-2.5-flash",
-            "gemini-2.0-flash",
-            "gemini-2.0-flash-lite",
+            "gemini-3.8-flash",
+            "gemini-3.5-flash",
+            "gemini-3.1-flash-lite",
         ]
 
     # OpenAI fallbacks (cost-efficient)
@@ -148,7 +148,7 @@ def _detect_provider(quality: bool = False) -> tuple[str, str, str]:
     if gemini_key and not local_url:
         return (
             "https://generativelanguage.googleapis.com/v1beta/openai",
-            chosen_model or "gemini-2.5-flash",
+            chosen_model or "gemini-3.8-flash",
             gemini_key,
         )
     if openai_key and not local_url:
