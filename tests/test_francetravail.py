@@ -116,3 +116,11 @@ def test_run_ne_garde_que_les_stages(tmp_db, monkeypatch):
     rows = conn.execute("SELECT url, title FROM jobs").fetchall()
     assert len(rows) == 1
     assert rows[0]["url"] == "https://ft/1"
+
+
+# ── _scope_variants : France Travail exige souvent application_<id> ───────
+
+def test_scope_variants_application_en_premier():
+    variants = ft._scope_variants("PAR_app_abc")
+    assert variants[0] == "application_PAR_app_abc " + ft.SCOPE
+    assert variants[-1] == ft.SCOPE

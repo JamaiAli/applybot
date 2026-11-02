@@ -37,6 +37,7 @@ donc les offres arrivent déjà « enriched ».
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -80,21 +81,49 @@ _STAGE_STRICT_RE = re.compile(r"stage|stagiaire", re.IGNORECASE)
 _token_cache: dict = {"token": None, "expires_at": 0.0}
 
 
+def _scope_variants(client_id: str) -> list[str]:
+    """Scopes à essayer, dans l'ordre. France Travail refuse souvent le scope
+    s'il ne contient pas l'entrée ``application_<client_id>`` (→ HTTP 400)."""
+    return [f"application_{client_id} {SCOPE}", SCOPE]
+
+
 def _request_token(client_id: str, client_secret: str, timeout: float = 20.0) -> tuple[str, int]:
-    """Demande un jeton client-credentials. Renvoie (token, expires_in_secondes)."""
-    body = urllib.parse.urlencode({
-        "grant_type": "client_credentials",
-        "client_id": client_id,
-        "client_secret": client_secret,
-        "scope": SCOPE,
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        TOKEN_URL, data=body,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
-    return data["access_token"], int(data.get("expires_in", 1500))
+    """Demande un jeton client-credentials. Renvoie (token, expires_in_secondes).
+
+    Essaie les variantes de scope (avec puis sans ``application_<id>``) ; un 400
+    sur l'une bascule sur la suivante.
+    """
+    basic = base64.b64encode(f"{client_id}:{client_secret}".encode("utf-8")).decode("ascii")
+    last_err = "requête de jeton échouée"
+    for scope in _scope_variants(client_id):
+        # 2 méthodes d'auth client : client_secret_post (corps) puis
+        # client_secret_basic (en-tête Authorization). ForgeRock peut exiger l'une.
+        attempts = [
+            ({"Content-Type": "application/x-www-form-urlencoded"},
+             {"grant_type": "client_credentials", "client_id": client_id,
+              "client_secret": client_secret, "scope": scope}),
+            ({"Content-Type": "application/x-www-form-urlencoded",
+              "Authorization": f"Basic {basic}"},
+             {"grant_type": "client_credentials", "scope": scope}),
+        ]
+        for headers, form in attempts:
+            body = urllib.parse.urlencode(form).encode("utf-8")
+            req = urllib.request.Request(TOKEN_URL, data=body, headers=headers)
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                return data["access_token"], int(data.get("expires_in", 1500))
+            except urllib.error.HTTPError as e:
+                detail = ""
+                try:
+                    detail = e.read().decode("utf-8", "replace")[:300]
+                except Exception:
+                    pass
+                last_err = f"HTTP {e.code} {e.reason}: {detail}".strip()
+                if e.code in (400, 401):
+                    continue  # scope/auth à réessayer avec la variante suivante
+                raise RuntimeError(last_err) from e
+    raise RuntimeError(last_err)
 
 
 def _get_token(client_id: str, client_secret: str) -> str:
