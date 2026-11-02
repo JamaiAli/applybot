@@ -41,87 +41,58 @@ class ModelEntry:
 def _build_fallback_chain(primary_model: str, quality: bool = False) -> list[ModelEntry]:
     """Build a cross-provider fallback chain starting from the primary model.
 
-    Gemini models come first (free tier), then OpenAI (cheap), then Anthropic.
-    Only includes providers whose API keys are configured.
+    Groq comes first (free & generous), then Gemini, OpenAI, DeepSeek, Anthropic.
+    Only providers whose API key is configured are included; the provider that
+    owns ``primary_model`` is pulled to the front of the chain.
     """
     gemini_key = os.environ.get("GEMINI_API_KEY", "")
     openai_key = os.environ.get("OPENAI_API_KEY", "")
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
     deepseek_key = os.environ.get("DEEPSEEK_API_KEY", "")
+    groq_key = os.environ.get("GROQ_API_KEY", "")
+
     gemini_url = "https://generativelanguage.googleapis.com/v1beta/openai"
     openai_url = "https://api.openai.com/v1"
     anthropic_url = "https://api.anthropic.com"
     deepseek_url = "https://api.deepseek.com/v1"
+    groq_url = "https://api.groq.com/openai/v1"
 
-    # Gemini chains — use verified model IDs only
     if quality:
-        gemini_models = [
-            "gemini-3.1-pro-preview",
-            "gemini-3.8-flash",
-            "gemini-3.5-flash",
-        ]
-    else:
-        gemini_models = [
-            "gemini-3.8-flash",
-            "gemini-3.5-flash",
-            "gemini-3.1-flash-lite",
-        ]
-
-    # OpenAI fallbacks (cost-efficient)
-    if quality:
+        groq_models = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+        gemini_models = ["gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-3.5-flash"]
         openai_models = ["gpt-4.1-mini", "gpt-4.1-nano"]
-    else:
-        openai_models = ["gpt-4.1-nano", "gpt-4.1-mini"]
-
-    # Anthropic fallbacks (cost-efficient)
-    if quality:
         anthropic_models = ["claude-sonnet-4-5-20250514", "claude-haiku-4-5-20251001"]
     else:
+        groq_models = ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"]
+        gemini_models = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-3.1-flash-lite"]
+        openai_models = ["gpt-4.1-nano", "gpt-4.1-mini"]
         anthropic_models = ["claude-haiku-4-5-20251001"]
+    deepseek_models = ["deepseek-chat"]
+
+    # Provider priority (free/generous first). Anthropic uses its own API format
+    # in _try_entry; the others (groq/gemini/openai/deepseek) are OpenAI-compatible.
+    providers = [
+        ("groq", groq_key, groq_url, groq_models),
+        ("gemini", gemini_key, gemini_url, gemini_models),
+        ("openai", openai_key, openai_url, openai_models),
+        ("deepseek", deepseek_key, deepseek_url, deepseek_models),
+        ("anthropic", anthropic_key, anthropic_url, anthropic_models),
+    ]
+    # Pull the provider that owns the primary model to the front (stable sort).
+    providers.sort(key=lambda p: 0 if primary_model in p[3] else 1)
 
     chain: list[ModelEntry] = []
+    for name, key, url, models in providers:
+        if not key:
+            continue
+        start = models.index(primary_model) if primary_model in models else 0
+        for m in models[start:]:
+            chain.append(ModelEntry(m, name, url, key))
 
-    # Start from the primary model in the Gemini chain
-    if gemini_key:
-        started = False
-        for m in gemini_models:
-            if m == primary_model:
-                started = True
-            if started:
-                chain.append(ModelEntry(m, "gemini", gemini_url, gemini_key))
-        # If primary wasn't found in chain, add full chain
-        if not started:
-            chain.append(ModelEntry(primary_model, "gemini", gemini_url, gemini_key))
-            for m in gemini_models:
-                if m != primary_model:
-                    chain.append(ModelEntry(m, "gemini", gemini_url, gemini_key))
-
-    # DeepSeek fallbacks (cheap, OpenAI-compatible)
-    if quality:
-        deepseek_models = ["deepseek-chat"]
-    else:
-        deepseek_models = ["deepseek-chat"]
-
-    # OpenAI fallbacks
-    if openai_key:
-        for m in openai_models:
-            chain.append(ModelEntry(m, "openai", openai_url, openai_key))
-
-    # DeepSeek fallbacks
-    if deepseek_key:
-        for m in deepseek_models:
-            chain.append(ModelEntry(m, "deepseek", deepseek_url, deepseek_key))
-
-    # Anthropic fallbacks
-    if anthropic_key:
-        for m in anthropic_models:
-            chain.append(ModelEntry(m, "anthropic", anthropic_url, anthropic_key))
-
-    # If nothing was added (no keys), raise
     if not chain:
         raise RuntimeError(
-            "No LLM provider configured. "
-            "Set GEMINI_API_KEY, OPENAI_API_KEY, DEEPSEEK_API_KEY, or ANTHROPIC_API_KEY."
+            "No LLM provider configured. Set GROQ_API_KEY, GEMINI_API_KEY, "
+            "OPENAI_API_KEY, DEEPSEEK_API_KEY, or ANTHROPIC_API_KEY."
         )
 
     return chain
@@ -135,6 +106,7 @@ def _detect_provider(quality: bool = False) -> tuple[str, str, str]:
     """Return (base_url, model, api_key) for the primary provider."""
     gemini_key = os.environ.get("GEMINI_API_KEY", "")
     openai_key = os.environ.get("OPENAI_API_KEY", "")
+    groq_key = os.environ.get("GROQ_API_KEY", "")
     local_url = os.environ.get("LLM_URL", "")
 
     model_override = os.environ.get("LLM_MODEL", "")
@@ -145,6 +117,12 @@ def _detect_provider(quality: bool = False) -> tuple[str, str, str]:
     else:
         chosen_model = model_override
 
+    if groq_key and not local_url:
+        return (
+            "https://api.groq.com/openai/v1",
+            chosen_model or ("llama-3.3-70b-versatile" if quality else "llama-3.1-8b-instant"),
+            groq_key,
+        )
     if gemini_key and not local_url:
         return (
             "https://generativelanguage.googleapis.com/v1beta/openai",
