@@ -409,8 +409,18 @@ def _compile(tex_path: Path) -> Path:
         last = subprocess.run(cmd, cwd=str(workdir), capture_output=True,
                               text=True, timeout=180)
     if not pdf_path.exists():
-        tail = (last.stdout or "")[-1500:] if last else ""
-        raise RuntimeError(f"Compilation LaTeX échouée.\n{tail}")
+        # Extrait les vraies erreurs LaTeX (lignes « ! … ») du fichier .log.
+        errs = ""
+        try:
+            logtxt = tex_path.with_suffix(".log").read_text(
+                encoding="utf-8", errors="ignore")
+            errs = " | ".join(l.strip() for l in logtxt.splitlines()
+                              if l.startswith("!"))[:400]
+        except OSError:
+            pass
+        if not errs:
+            errs = (last.stdout or "")[-400:] if last else ""
+        raise RuntimeError(f"Compilation LaTeX échouée : {errs}")
     return pdf_path
 
 
@@ -435,8 +445,12 @@ def generate_cv(offer: dict, out_name: str | None = None) -> Path:
 
     if not out_name:
         import hashlib
+        import time as _t
         h = hashlib.md5((offer.get("url") or offer.get("title") or "cv").encode()).hexdigest()[:8]
-        out_name = f"CV_Ali_Jamai_{h}"
+        # Suffixe horaire -> nom unique à chaque génération : évite tout conflit
+        # avec un PDF du même nom déjà OUVERT (Windows verrouille le fichier,
+        # ce qui ferait échouer la compilation LaTeX).
+        out_name = f"CV_Ali_Jamai_{h}_{_t.strftime('%H%M%S')}"
     tex_path = CV_LATEX_DIR / f"{out_name}.tex"
 
     # Mise en page adaptative : on réduit puces puis expériences jusqu'à tenir
