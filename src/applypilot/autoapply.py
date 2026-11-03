@@ -52,8 +52,8 @@ def _field_values(p: dict) -> list[tuple[re.Pattern, str]]:
         r"(pr[ée]nom|first[\s_-]*name|given)": first,
         r"(nom(?![\s_-]*utilisateur)|last[\s_-]*name|surname|family)": last,
         r"(e[\s_-]?mail|courriel)": pers.get("email", ""),
-        r"(t[ée]l[ée]phone|phone|mobile|portable)": pers.get("phone", ""),
-        r"(ville|city|localit[ée])": pers.get("city", ""),
+        r"(t[ée]l[ée]phone|phone|mobile|portable|num[ée]ro|joindre)": pers.get("phone", ""),
+        r"(ville|habitez|city|localit[ée])": pers.get("city", ""),
         r"(code[\s_-]*postal|postal[\s_-]*code|zip)": pers.get("postal_code", ""),
         r"(linkedin)": pers.get("linkedin_url", ""),
         r"(github)": pers.get("github_url", ""),
@@ -112,30 +112,65 @@ def _follow_to_employer(page, offer: dict) -> str:
     return page.url
 
 
+# JS : pour chaque input/textarea, renvoie son LIBELLÉ (aria-label, <label for>,
+# label englobant, ou le texte le plus proche au-dessus — ex. une question),
+# plus name/placeholder. Indispensable pour les formulaires type Wizbii où le
+# libellé est une question séparée, pas un attribut du champ.
+_JS_LABELS = r"""
+() => {
+  const els = [...document.querySelectorAll('input, textarea')];
+  return els.map((el, idx) => {
+    let label = el.getAttribute('aria-label') || '';
+    if (!label && el.id) {
+      const l = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+      if (l) label = l.innerText || '';
+    }
+    if (!label) { const l = el.closest('label'); if (l) label = l.innerText || ''; }
+    if (!label) {
+      let node = el;
+      for (let i = 0; i < 4 && node; i++) {
+        node = node.parentElement;
+        if (node) {
+          const t = (node.innerText || '').trim();
+          if (t) { label = t.split('\n')[0]; break; }
+        }
+      }
+    }
+    label = (label || '') + ' ' + (el.name || '') + ' ' + (el.placeholder || '');
+    const r = el.getBoundingClientRect();
+    return {idx, label: label.slice(0, 160),
+            type: (el.type || el.tagName || '').toLowerCase(),
+            visible: !!(r.width && r.height)};
+  });
+}
+"""
+
+
 def _fill_known_fields(page, p: dict) -> int:
-    """Remplit les champs texte connus restés vides. Renvoie le nb rempli."""
+    """Remplit les champs connus restés vides en s'appuyant sur leur LIBELLÉ
+    (question affichée) et non seulement sur les attributs. Renvoie le nb rempli."""
     pairs = _field_values(p)
-    filled = 0
     try:
-        inputs = page.locator(
-            "input[type='text'], input[type='email'], input[type='tel'], "
-            "input:not([type]), textarea")
-        n = min(inputs.count(), 60)
+        metas = page.evaluate(_JS_LABELS)
     except Exception:
-        return 0
-    for i in range(n):
-        el = inputs.nth(i)
+        metas = []
+    inputs = page.locator("input, textarea")
+    filled = 0
+    for m in metas:
+        if not m.get("visible") or m.get("type") in ("hidden", "password", "file",
+                                                      "checkbox", "radio", "submit"):
+            continue
+        label = (m.get("label") or "").lower()
+        if not label:
+            continue
+        el = inputs.nth(m["idx"])
         try:
             if not el.is_visible() or not el.is_editable():
                 continue
             if (el.input_value() or "").strip():
                 continue  # ne pas écraser
-            meta = " ".join(filter(None, [
-                el.get_attribute("name"), el.get_attribute("id"),
-                el.get_attribute("placeholder"), el.get_attribute("aria-label")]))
-            meta = (meta or "").lower()
             for pat, val in pairs:
-                if pat.search(meta):
+                if pat.search(label):
                     el.fill(val, timeout=3000)
                     filled += 1
                     break
@@ -288,15 +323,24 @@ def apply_to_offer(offer: dict, cv_path: str | None = None,
             except Exception as exc:
                 log.debug("attente connexion : %s", exc)
 
-        # Laisse la fenêtre ouverte pour que l'utilisateur finisse (sauf headless).
+        # Laisse la fenêtre ouverte ET continue de remplir au fil des étapes
+        # (formulaires multi-pages type Wizbii : profil -> parcours -> recherche).
+        # On ne touche jamais aux champs déjà remplis ; on saute connexion/CAPTCHA.
         if not headless and keep_open_seconds > 0:
             waited = 0
-            try:
-                while waited < keep_open_seconds and not page.is_closed():
-                    time.sleep(2)
-                    waited += 2
-            except Exception:
-                pass
+            while waited < keep_open_seconds:
+                try:
+                    if page.is_closed():
+                        break
+                    time.sleep(5)
+                    waited += 5
+                    if _has_captcha(page) or _looks_like_login(page.url, page):
+                        continue
+                    _fill_known_fields(page, _profile())
+                    if cv_path:
+                        _upload_cv(page, cv_path)
+                except Exception:
+                    break
         try:
             ctx.close()
         except Exception:
