@@ -63,15 +63,35 @@ _UNICODE_FIX = {
 }
 
 
+# Remplacements supplémentaires de symboles Unicode non gérés par pdflatex.
+_EXTRA_FIX = {
+    "←": " ", "↔": " ", "⇒": " vers ", "÷": "/", " ": "~",
+    "‚": ",", "„": "\"", "–": "--", "—": "---", "‑": "-", "−": "-",
+    "•": "- ", "·": "-", "◦": "- ", "≥": ">=", "≤": "<=", "≈": "~",
+    "≠": "!=", "€": " EUR", "£": " GBP", "²": "2", "³": "3", "¹": "1",
+    "½": "1/2", "¼": "1/4", "¾": "3/4", "™": "", "®": "", "©": "",
+    "​": "", "﻿": "",
+}
+# Lettres acceptées au-delà de l'ASCII (babel french les gère) ; le reste est retiré.
+_FRENCH_OK = set("àâäçéèêëîïòôöùûüÿœæÀÂÄÇÉÈÊËÎÏÒÔÖÙÛÜŸŒÆ«»°")
+
+
 def latex_escape(s: str) -> str:
-    """Échappe le texte brut pour LaTeX (puces issues du JSON)."""
+    """Échappe le texte brut pour LaTeX et neutralise tout caractère Unicode
+    non géré par pdflatex (sinon « Unicode character not set up » = échec)."""
     if not s:
         return ""
     for uni, repl in _UNICODE_FIX.items():
         s = s.replace(uni, repl)
+    for uni, repl in _EXTRA_FIX.items():
+        s = s.replace(uni, repl)
     out = []
     for ch in s:
-        out.append(_LATEX_SPECIALS.get(ch, ch))
+        if ch in _LATEX_SPECIALS:
+            out.append(_LATEX_SPECIALS[ch])
+        elif ord(ch) < 128 or ch in _FRENCH_OK:
+            out.append(ch)
+        # tout autre caractère Unicode exotique est ignoré (évite l'échec LaTeX)
     return "".join(out)
 
 
@@ -400,7 +420,13 @@ def generate_cv(offer: dict, out_name: str | None = None) -> Path:
     Lève RuntimeError/FileNotFoundError en cas d'échec (données ou compilation).
     """
     exp_data = load_experiences()
-    selection = _llm_selection(offer, exp_data) or _default_selection(exp_data, offer)
+    # On tente d'abord la sélection Groq ; en cas d'échec de compilation, on
+    # retombe sur la sélection déterministe (profil « propre », sans texte LLM).
+    selections = []
+    llm_sel = _llm_selection(offer, exp_data)
+    if llm_sel:
+        selections.append(llm_sel)
+    selections.append(_default_selection(exp_data, offer))
 
     CV_LATEX_DIR.mkdir(parents=True, exist_ok=True)
     if not (CV_LATEX_DIR / PHOTO_REL).exists():
@@ -414,12 +440,21 @@ def generate_cv(offer: dict, out_name: str | None = None) -> Path:
     tex_path = CV_LATEX_DIR / f"{out_name}.tex"
 
     # Mise en page adaptative : on réduit puces puis expériences jusqu'à tenir
-    # sur une seule page (CV de stage = 1 page impérative).
-    pdf = None
-    for max_exp, max_bullets in [(4, 3), (4, 2), (3, 2), (3, 1)]:
-        tex = _render_tex(exp_data, selection, offer, max_exp, max_bullets)
-        tex_path.write_text(tex, encoding="utf-8")
-        pdf = _compile(tex_path)
-        if _page_count(pdf) <= 1:
-            break
-    return pdf
+    # sur une seule page (CV de stage = 1 page impérative). Si une sélection ne
+    # compile pas, on essaie la suivante.
+    last_err = None
+    for selection in selections:
+        pdf = None
+        for max_exp, max_bullets in [(4, 3), (4, 2), (3, 2), (3, 1)]:
+            tex = _render_tex(exp_data, selection, offer, max_exp, max_bullets)
+            tex_path.write_text(tex, encoding="utf-8")
+            try:
+                pdf = _compile(tex_path)
+            except Exception as exc:
+                last_err = exc
+                continue
+            if _page_count(pdf) <= 1:
+                return pdf
+        if pdf is not None:
+            return pdf  # a compilé mais >1 page : on accepte faute de mieux
+    raise RuntimeError(f"Génération CV impossible : {last_err}")
