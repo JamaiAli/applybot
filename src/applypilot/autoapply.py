@@ -105,16 +105,26 @@ def _looks_like_login(url: str, page) -> bool:
 
 
 def _has_captcha(page) -> bool:
+    """Détecte uniquement un CAPTCHA VISIBLE à résoudre (case reCAPTCHA v2,
+    hCaptcha, Turnstile). Les scripts reCAPTCHA v3 INVISIBLES chargés en fond
+    (ex. SAP SuccessFactors) ne comptent PAS : ils ne bloquent pas le
+    remplissage et ne se déclenchent qu'à l'envoi."""
+    selectors = (
+        "iframe[src*='recaptcha/api2/anchor']",   # case « je ne suis pas un robot »
+        "iframe[src*='recaptcha/api2/bframe']",    # défi image
+        "iframe[src*='hcaptcha.com']",
+        "iframe[src*='challenges.cloudflare.com']",
+        "iframe[title*='captcha' i]",
+    )
     try:
-        html = page.content()
-    except Exception:
-        return False
-    if _CAPTCHA_HOST_RE.search(html):
-        return True
-    try:
-        for fr in page.frames:
-            if _CAPTCHA_HOST_RE.search(fr.url or ""):
-                return True
+        for sel in selectors:
+            loc = page.locator(sel)
+            for i in range(min(loc.count(), 3)):
+                try:
+                    if loc.nth(i).is_visible():
+                        return True
+                except Exception:
+                    continue
     except Exception:
         pass
     return False
