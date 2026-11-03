@@ -180,11 +180,22 @@ def _fill_known_fields(page, p: dict) -> int:
 
 
 def _upload_cv(page, cv_path: str) -> bool:
+    """Joint le CV au PREMIER champ fichier, UNE SEULE FOIS (idempotent) : si un
+    fichier y est déjà, on ne retéléverse pas (sinon « Vous ne pouvez plus
+    télécharger de fichiers »). On ne touche pas aux champs « fichiers
+    supplémentaires »."""
     try:
         files = page.locator("input[type='file']")
         if files.count() == 0:
             return False
-        files.first.set_input_files(cv_path, timeout=5000)
+        first = files.first
+        try:
+            already = first.evaluate("e => (e.files && e.files.length) ? e.files.length : 0")
+        except Exception:
+            already = 0
+        if already and already > 0:
+            return True  # CV déjà joint — ne rien faire
+        first.set_input_files(cv_path, timeout=5000)
         return True
     except Exception as exc:
         log.debug("Upload CV échoué : %s", exc)
