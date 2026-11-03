@@ -84,6 +84,7 @@ _UPSTREAM: dict[str, str | None] = {
 # Canonical name → description. Order determines default execution order.
 DISCOVERY_SOURCES: dict[str, str] = {
     "adzuna":       "Adzuna — agrégateur d'offres, API France (stages FR)",
+    "hellowork":    "HelloWork — scraping de la recherche (stages FR)",
     "francetravail": "France Travail — Offres d'emploi v2 API (stages FR)",
     # LinkedIn disabled project-wide (ToS / ban risk) — see jobspy.py guard.
     "jobspy":       "JobSpy aggregator (Indeed, etc. — LinkedIn disabled)",
@@ -106,6 +107,7 @@ _SOURCE_ALIASES: dict[str, str] = {
     "dice":  "smartextract",  # dice is scraped via smartextract + sites.yaml
     "ft":            "francetravail",
     "france_travail": "francetravail",
+    "hw":            "hellowork",
 }
 
 # Sources that are jobspy with a specific site filter.
@@ -156,6 +158,17 @@ def _run_discover(workers: int = 1, sources: list[str] | None = None) -> dict:
             log.error("Adzuna scraper failed: %s", e)
             console.print(f"  [red]Adzuna error:[/red] {e}")
             stats["adzuna"] = f"error: {e}"
+
+    if "hellowork" in active:
+        console.print("  [cyan]HelloWork (scraping recherche)...[/cyan]")
+        try:
+            from applypilot.discovery.hellowork import run_hellowork_discovery
+            run_hellowork_discovery(workers=workers)
+            stats["hellowork"] = "ok"
+        except Exception as e:
+            log.error("HelloWork scraper failed: %s", e)
+            console.print(f"  [red]HelloWork error:[/red] {e}")
+            stats["hellowork"] = f"error: {e}"
 
     if "francetravail" in active:
         console.print("  [cyan]France Travail (Offres d'emploi v2)...[/cyan]")
