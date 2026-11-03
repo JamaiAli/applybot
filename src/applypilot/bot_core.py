@@ -117,7 +117,8 @@ def set_apply_status(url: str, status: str, note: str | None = None) -> None:
     conn = get_connection()
     conn.execute("UPDATE jobs SET apply_status = ? WHERE url = ?", (status, url))
     conn.commit()
-    to_state = {"validated": "ready_to_apply", "ignored": "archived"}.get(status)
+    to_state = {"validated": "ready_to_apply", "ignored": "archived",
+                "applied": "applied"}.get(status)
     if to_state:
         try:
             transition_state(conn, url, to_state,

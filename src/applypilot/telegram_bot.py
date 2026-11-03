@@ -111,10 +111,10 @@ def _offer_keyboard(h: str, done: bool = False) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup([[InlineKeyboardButton("— décision enregistrée —",
                                                             callback_data="noop")]])
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📄 Générer le CV adapté", callback_data=f"cv:{h}")],
+        [InlineKeyboardButton("📨 Préparer ma candidature", callback_data=f"prep:{h}")],
         [
-            InlineKeyboardButton("✅ Valider", callback_data=f"ok:{h}"),
-            InlineKeyboardButton("✏️ Modifier", callback_data=f"edit:{h}"),
+            InlineKeyboardButton("✅ J'ai postulé", callback_data=f"ok:{h}"),
+            InlineKeyboardButton("✏️ Modifier le CV", callback_data=f"edit:{h}"),
             InlineKeyboardButton("❌ Ignorer", callback_data=f"no:{h}"),
         ],
     ])
@@ -250,47 +250,43 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not url:
         return await query.answer("Offre introuvable (redémarrage ?).", show_alert=True)
 
-    if action == "cv":
-        await query.answer("Génération du CV…")
+    if action == "prep":
+        await query.answer("Préparation…")
         await context.bot.send_message(
             query.message.chat_id,
-            "📄 Génération du CV adapté à l'offre (sélection de tes expériences "
-            "réelles par l'IA, compilation LaTeX)… ~10 s.")
+            "📨 Préparation de ta candidature : génération du CV adapté "
+            "(tes expériences réelles, aucune invention)… ~10 s.")
+        row = bot_core.fetch_one(url) or {}
         try:
             from applypilot import cv_latex
-            row = bot_core.fetch_one(url) or {}
             pdf = await asyncio.to_thread(cv_latex.generate_cv, row)
             bot_core.set_cv_path(url, str(pdf))
             with open(pdf, "rb") as fh:
                 await context.bot.send_document(
                     query.message.chat_id, InputFile(fh, filename=pdf.name),
-                    caption="✅ CV adapté généré (1 page, tes données réelles, "
-                            "aucune invention). Vérifie-le, puis ✅ Valider.")
+                    caption="📄 Ton CV adapté à cette offre (1 page).")
         except Exception as exc:
             log.exception("Génération CV échouée : %s", exc)
             await context.bot.send_message(
                 query.message.chat_id, f"⚠️ Échec de la génération du CV : {exc}")
+        link = row.get("application_url") or row.get("url") or ""
+        bot_core.set_apply_status(url, "prepared")
+        await context.bot.send_message(
+            query.message.chat_id,
+            "✅ <b>Candidature prête.</b> Pour postuler :\n"
+            "1️⃣ Télécharge le CV ci-dessus.\n"
+            f'2️⃣ Ouvre l\'offre : <a href="{html.escape(link)}">lien de l\'offre</a>\n'
+            "3️⃣ Clique « Postuler », connecte-toi si besoin, téléverse le CV, Envoie.\n\n"
+            "Quand c'est fait, appuie sur ✅ J'ai postulé.",
+            parse_mode=ParseMode.HTML, disable_web_page_preview=True)
         return
 
     if action == "ok":
-        bot_core.set_apply_status(url, "validated")
-        row = bot_core.fetch_one(url) or {}
-        await query.answer("✅ Validée")
+        bot_core.set_apply_status(url, "applied")
+        await query.answer("✅ Marquée postulée")
         await query.edit_message_reply_markup(reply_markup=_offer_keyboard(h, done=True))
-        paths = bot_core.attachment_paths(row)
-        txt = ("✅ <b>Validée.</b> Elle passe en <i>prête à postuler</i>. "
-               "La soumission réelle reste une étape séparée (je ne soumets "
-               "jamais sans ce ✅).")
-        if paths:
-            txt += "\n📎 CV + lettre envoyés."
-        await context.bot.send_message(query.message.chat_id, txt, parse_mode=ParseMode.HTML)
-        for path in paths:
-            try:
-                with open(path, "rb") as fh:
-                    await context.bot.send_document(query.message.chat_id,
-                                                    InputFile(fh, filename=path.name))
-            except OSError:
-                pass
+        await context.bot.send_message(
+            query.message.chat_id, "✅ Offre marquée « postulée ». Bravo 🎉")
 
     elif action == "no":
         bot_core.set_apply_status(url, "ignored")
