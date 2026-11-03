@@ -1042,5 +1042,17 @@ def creds_delete(
     console.print(f"[green]Deleted {deleted} credential row(s) for[/green] [bold]{domain}[/bold]")
 
 
+@app.command()
+def bot() -> None:
+    """Lancer le pilotage Discord (recherche, cartes d'offres, boutons ✅/✏️/❌).
+
+    Nécessite DISCORD_BOT_TOKEN et DISCORD_USER_ID dans ~/.applypilot/.env.
+    """
+    _bootstrap()
+    from applypilot.discord_bot import main as run_bot
+
+    run_bot()
+
+
 if __name__ == "__main__":
     app()
