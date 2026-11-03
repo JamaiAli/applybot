@@ -159,28 +159,38 @@ def _llm_selection(offer: dict, exp_data: dict) -> dict | None:
     skills_cats = list(exp_data["skills"].keys())
     cand = exp_data["candidate"]
 
-    # Consigne « accroche humanisée » : éviter que le paragraphe sonne IA.
+    # Consigne « accroche » : bien rédigée, fluide, humaine (éviter le ton IA).
     profil_rule = (
-        "Accroche de CV en français, 2 ou 3 phrases courtes, à la première "
-        "personne, écrite comme le ferait un vrai étudiant : naturelle, directe, "
-        "concrete et sincère. Ancre 1 ou 2 éléments REELS et précis en lien avec "
-        "CETTE offre, par exemple une techno ou un projet que j'ai fait. "
-        "N'utilise JAMAIS les formules qui sonnent « IA » ou « CV bateau » : "
-        "« Fort de », « Passionné par », « Doté d'une solide », « mettre à profit », "
-        "« évoluer au sein de », « environnement stimulant », « environnement "
-        "dynamique », « alliant ... et ... », « au carrefour de », « je suis "
-        "convaincu », « rigoureux et motivé », « dynamique et motivé », ni les "
-        "tirets cadratins. Varie la tournure d'une offre à l'autre. Uniquement "
-        "les faits fournis, aucun chiffre inventé, aucune parenthèse."
+        "Rédige une accroche de CV en français, 2 ou 3 phrases BIEN CONSTRUITES "
+        "et FLUIDES — surtout PAS une liste de tâches du type « j'ai fait ci, "
+        "j'ai fait ça ». À la première personne, ton professionnel mais naturel, "
+        "comme un vrai étudiant. Structure : qui je suis et le stage que je "
+        "recherche, puis 1 ou 2 réalisations RÉELLES et concrètes en lien direct "
+        "avec cette offre, amenées de façon articulée (relie les idées avec des "
+        "connecteurs), et ce que je peux apporter. Temps cohérent, phrases "
+        "soignées. N'utilise JAMAIS les formules qui sonnent « IA » / CV bateau : "
+        "« Fort de », « Passionné par », « Doté d'une solide », « mettre à "
+        "profit », « évoluer au sein de », « environnement stimulant », "
+        "« environnement dynamique », « alliant ... et ... », « au carrefour "
+        "de », « je suis convaincu », « rigoureux et motivé », « dynamique et "
+        "motivé », ni les tirets cadratins. Varie la tournure d'une offre à "
+        "l'autre. Uniquement les faits fournis, aucun chiffre inventé, aucune "
+        "parenthèse."
     )
 
     system = (
         "Tu aides à ADAPTER un CV à une offre de stage, en français. "
         "RÈGLE ABSOLUE : tu ne sélectionnes et n'ordonnes que des éléments RÉELS "
-        "fournis ; tu n'inventes AUCUNE compétence, expérience, entreprise ni "
-        "chiffre. Tu réponds UNIQUEMENT par un objet JSON valide, sans texte autour."
+        "fournis ; tu n'inventes AUCUNE compétence, expérience, entreprise, ÉCOLE, "
+        "ville d'études ni chiffre. L'école du candidat est TOUJOURS celle indiquée "
+        "ci-dessous, jamais celle de la ville de l'offre. Tu réponds UNIQUEMENT par "
+        "un objet JSON valide, sans texte autour."
     )
+    fixed = (f"{cand.get('full_name')}, {cand.get('title')} "
+             "(Bac+4, diplôme d'ingénieur prévu en 2028). École : INSA Centre Val "
+             "de Loire — NE JAMAIS la remplacer par une autre.")
     user = (
+        f"CANDIDAT (faits fixes, à ne JAMAIS modifier) : {fixed}\n"
         f"OBJECTIF DU CANDIDAT : {cand.get('objective')}\n\n"
         f"OFFRE :\nTitre : {offer.get('title')}\nEntreprise : "
         f"{offer.get('company') or offer.get('site')}\nLieu : {offer.get('location')}\n"
@@ -199,7 +209,7 @@ def _llm_selection(offer: dict, exp_data: dict) -> dict | None:
         raw = client.chat(
             [{"role": "system", "content": system},
              {"role": "user", "content": user}],
-            max_tokens=1200, temperature=0.5)
+            max_tokens=1200, temperature=0.4)
     except Exception as exc:
         log.warning("Appel LLM échoué : %s", exc)
         return None
