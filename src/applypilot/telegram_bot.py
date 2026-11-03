@@ -345,30 +345,43 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return await query.answer("Offre introuvable (redémarrage ?).", show_alert=True)
 
     if action == "jobapply":
-        # Job étudiant / intérim : ouvre l'offre + pré-remplit avec le CV fixe.
-        await query.answer("Ouverture…")
+        # Job étudiant / intérim : CV fixe. Envoie le CV + le lien (téléphone) ET
+        # ouvre le formulaire pré-rempli sur le PC si tu y es.
+        await query.answer("C'est parti…")
+        chat_id = query.message.chat_id
         if not JOB_CV.exists():
             await context.bot.send_message(
-                query.message.chat_id,
-                "⚠️ CV job étudiant introuvable (cv_job_etudiant.pdf). "
-                "Renvoie-le-moi et je le remets en place.")
+                chat_id, "⚠️ CV job étudiant introuvable (cv_job_etudiant.pdf). "
+                         "Renvoie-le-moi et je le remets en place.")
             return
+        # 1) Envoie le CV job étudiant (utile pour postuler depuis le téléphone).
         try:
-            cmd = [sys.executable, "-m", "applypilot.autoapply",
-                   "--url", url, "--cv", str(JOB_CV)]
-            subprocess.Popen(cmd, cwd=os.getcwd(),
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            await context.bot.send_message(
-                query.message.chat_id,
-                "🖥️ J'ouvre l'offre dans un navigateur sur ton PC et je pré-remplis "
-                "le formulaire avec ton <b>CV job étudiant</b>. Là-bas : vérifie, "
-                "téléverse le CV s'il manque, et clique <b>Postuler/Envoyer</b>. "
-                "Connexion/CAPTCHA éventuels = à toi.",
-                parse_mode=ParseMode.HTML)
+            with open(JOB_CV, "rb") as fh:
+                await context.bot.send_document(
+                    chat_id, InputFile(fh, filename="CV_Ali_Jamai_Job_Etudiant.pdf"),
+                    caption="📄 Ton CV job étudiant.")
+        except Exception:
+            pass
+        # 2) Ouvre le formulaire pré-rempli sur le PC (si tu y es).
+        opened = False
+        try:
+            subprocess.Popen(
+                [sys.executable, "-m", "applypilot.autoapply", "--url", url,
+                 "--cv", str(JOB_CV)], cwd=os.getcwd(),
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            opened = True
         except Exception as exc:
-            log.exception("jobapply échoué : %s", exc)
-            await context.bot.send_message(
-                query.message.chat_id, f"⚠️ Échec de l'ouverture : {exc}")
+            log.warning("jobapply lancement navigateur : %s", exc)
+        parts = []
+        if opened:
+            parts.append("🖥️ <b>Sur ton PC</b> : le formulaire s'ouvre pré-rempli "
+                         "avec ton CV job étudiant.")
+        parts.append(f'📱 <b>Sur ton téléphone</b> : ouvre l\'offre et postule à la '
+                     f'main (CV ci-dessus) → <a href="{html.escape(url)}">lien de l\'offre</a>')
+        parts.append("Connexion/CAPTCHA = à toi.")
+        await context.bot.send_message(chat_id, "\n".join(parts),
+                                       parse_mode=ParseMode.HTML,
+                                       disable_web_page_preview=True)
         return
 
     if action == "prep":
@@ -410,17 +423,13 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
         msg = ["✅ <b>Candidature prête.</b>"]
         if opened:
-            msg.append("🖥️ J'ouvre le <b>formulaire pré-rempli dans un navigateur "
-                       "sur ton PC</b> (~15 s). Là-bas : vérifie, <b>téléverse le CV</b> "
-                       "si besoin, puis clique <b>Postuler</b>.")
-            msg.append("Si une <b>connexion</b> ou un <b>CAPTCHA</b> apparaît, fais-le "
-                       "toi-même dans la fenêtre, puis relance « Préparer ».")
-        else:
-            msg.append("Pour postuler :")
-            msg.append(f'1️⃣ Télécharge le CV ci-dessus.\n2️⃣ Ouvre l\'offre : '
-                       f'<a href="{html.escape(link)}">lien</a>\n'
-                       "3️⃣ Clique « Postuler », connecte-toi, téléverse le CV, Envoie.")
-        msg.append("\nQuand c'est fait, appuie sur ✅ J'ai postulé.")
+            msg.append("🖥️ <b>Sur ton PC</b> : le formulaire s'ouvre pré-rempli "
+                       "automatiquement — vérifie, téléverse le CV si besoin, "
+                       "puis clique Postuler.")
+        msg.append(f'📱 <b>Sur ton téléphone</b> : ouvre l\'offre et postule à la '
+                   f'main (le CV est juste au-dessus) → '
+                   f'<a href="{html.escape(link)}">lien de l\'offre</a>')
+        msg.append("Connexion / CAPTCHA = à toi. Ensuite tape /done.")
         await context.bot.send_message(
             query.message.chat_id, "\n".join(msg),
             parse_mode=ParseMode.HTML, disable_web_page_preview=True)
