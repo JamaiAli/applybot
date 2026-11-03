@@ -168,6 +168,53 @@ def _screenshot(page, offer: dict) -> str | None:
         return None
 
 
+def _fill_and_report(page, offer: dict, cv_path: str | None) -> dict:
+    """Remplit les champs connus + joint le CV, renvoie un résultat 'filled'/'no_form'."""
+    filled = _fill_known_fields(page, _profile())
+    uploaded = bool(cv_path) and _upload_cv(page, cv_path)
+    if filled == 0 and not uploaded:
+        return {"status": "no_form", "url": page.url,
+                "message": "Pas de formulaire reconnu ici — fais-le à la main.",
+                "screenshot": _screenshot(page, offer)}
+    return {"status": "filled", "url": page.url,
+            "message": f"Formulaire pré-rempli ({filled} champs), CV "
+                       f"{'joint ✅' if uploaded else 'à téléverser toi-même'}. "
+                       "Vérifie, complète si besoin, puis clique Postuler.",
+            "screenshot": _screenshot(page, offer)}
+
+
+def _wait_login_then_fill(page, offer: dict, cv_path: str | None, timeout: int) -> dict:
+    """Après détection d'une connexion : attend qu'Ali se connecte DANS la fenêtre,
+    puis ouvre le formulaire et le remplit automatiquement (sans re-cliquer)."""
+    waited = 0
+    while waited < timeout:
+        try:
+            if page.is_closed():
+                break
+            time.sleep(3)
+            waited += 3
+            if _looks_like_login(page.url, page):
+                continue  # toujours sur la page de connexion
+            # Connecté : tenter d'ouvrir le formulaire puis remplir.
+            try:
+                btn = page.locator(
+                    "a:has-text('Postuler'), button:has-text('Postuler')").first
+                if btn.count() > 0:
+                    btn.click(timeout=4000)
+                    page.wait_for_load_state("domcontentloaded", timeout=10000)
+            except Exception:
+                pass
+            if _looks_like_login(page.url, page):
+                continue
+            res = _fill_and_report(page, offer, cv_path)
+            if res["status"] == "filled":
+                return res
+        except Exception:
+            continue
+    return {"status": "needs_login", "url": page.url if not page.is_closed() else None,
+            "message": "En attente de connexion dans la fenêtre…", "screenshot": None}
+
+
 def _run_flow(page, offer: dict, cv_path: str | None) -> dict:
     """Atteint le formulaire, détecte connexion/CAPTCHA, remplit + joint le CV.
     Ne soumet JAMAIS (l'envoi reste manuel). Renvoie le dict de résultat."""
@@ -199,21 +246,7 @@ def _run_flow(page, offer: dict, cv_path: str | None) -> dict:
                       screenshot=_screenshot(page, offer))
         return result
 
-    filled = _fill_known_fields(page, _profile())
-    uploaded = bool(cv_path) and _upload_cv(page, cv_path)
-
-    if filled == 0 and not uploaded:
-        result.update(status="no_form", url=final,
-                      message="Pas de formulaire reconnu ici — fais-le à la main.",
-                      screenshot=_screenshot(page, offer))
-        return result
-
-    result.update(
-        status="filled", url=final, screenshot=_screenshot(page, offer),
-        message=f"Formulaire pré-rempli ({filled} champs), CV "
-                f"{'joint ✅' if uploaded else 'à téléverser toi-même'}. "
-                "Vérifie, complète si besoin, puis clique Postuler.")
-    return result
+    return _fill_and_report(page, offer, cv_path)
 
 
 # ---------------------------------------------------------------------------
@@ -247,6 +280,14 @@ def apply_to_offer(offer: dict, cv_path: str | None = None,
             log.exception("apply_to_offer a échoué : %s", exc)
             result = {"status": "error", "url": page.url if page else None,
                       "message": str(exc), "screenshot": None}
+        # Si connexion requise : attendre qu'Ali se connecte DANS la fenêtre,
+        # puis remplir automatiquement (il n'a pas à re-cliquer « Préparer »).
+        if not headless and result.get("status") == "needs_login":
+            try:
+                result = _wait_login_then_fill(page, offer, cv_path, keep_open_seconds)
+            except Exception as exc:
+                log.debug("attente connexion : %s", exc)
+
         # Laisse la fenêtre ouverte pour que l'utilisateur finisse (sauf headless).
         if not headless and keep_open_seconds > 0:
             waited = 0
