@@ -224,6 +224,133 @@ def _fill_known_fields(page, p: dict) -> int:
     return filled
 
 
+# JS : extrait les <select> (avec leurs options) et les <textarea> vides visibles,
+# avec leur libellé — pour que Groq choisisse l'option / rédige la lettre.
+_JS_SMART_FIELDS = r"""
+() => {
+  const labelOf = (el) => {
+    let label = el.getAttribute('aria-label') || '';
+    if (!label && el.id) { const l=document.querySelector('label[for="'+CSS.escape(el.id)+'"]'); if(l) label=l.innerText||''; }
+    if (!label) { const l=el.closest('label'); if(l) label=l.innerText||''; }
+    if (!label) { let n=el; for(let i=0;i<4&&n;i++){ n=n.parentElement; if(n){const t=(n.innerText||'').trim(); if(t){label=t.split('\n')[0];break;}}}}
+    return (label||'').slice(0,160);
+  };
+  const out = [];
+  const selects = [...document.querySelectorAll('select')];
+  selects.forEach((el) => {
+    const r = el.getBoundingClientRect(); if (!(r.width && r.height)) return;
+    if (el.value && el.value.trim() && el.selectedIndex > 0) return;
+    const opts = [...el.options].map(o => (o.text||'').trim()).filter(Boolean);
+    out.push({kind:'select', nth: selects.indexOf(el), label: labelOf(el), options: opts.slice(0,30)});
+  });
+  const tas = [...document.querySelectorAll('textarea')];
+  tas.forEach((el) => {
+    const r = el.getBoundingClientRect(); if (!(r.width && r.height)) return;
+    if ((el.value||'').trim()) return;
+    out.push({kind:'textarea', nth: tas.indexOf(el), label: labelOf(el), options: []});
+  });
+  return out;
+}
+"""
+
+
+def _candidate_brief(p: dict) -> str:
+    pers = p.get("personal", {})
+    skills = p.get("skills_boundary", {})
+    flat = []
+    for v in (skills.values() if isinstance(skills, dict) else []):
+        if isinstance(v, list):
+            flat += v
+    school = p.get("experience", {}).get("school") or "INSA Centre Val de Loire"
+    objectif = (p.get("internship", {}).get("summary")
+                or "stage de 6 mois a partir d'avril 2027 en integration IT et "
+                   "cybersecurite, autour d'Active Directory / Entra ID")
+    comp = ", ".join(flat[:25])
+    return (f"Nom: {pers.get('full_name')}. Ecole: {school}. "
+            f"Objectif: {objectif}. Competences cles: {comp}.")
+
+
+def _smart_fill(page, offer: dict, p: dict, seen: set) -> int:
+    """Via Groq : choisit l'option des menus déroulants et rédige la lettre de
+    motivation, à partir des SEULES données du profil. Dé-doublonne par
+    signature (un seul appel Groq par page/étape distincte)."""
+    try:
+        fields = page.evaluate(_JS_SMART_FIELDS)
+    except Exception:
+        fields = []
+    if not fields:
+        return 0
+    sig = "|".join(f"{f['kind']}:{f['label']}" for f in fields)
+    if sig in seen:
+        return 0
+    seen.add(sig)
+
+    import json as _json
+    cat = [{"i": i, "type": f["kind"], "libelle": f["label"], "options": f["options"]}
+           for i, f in enumerate(fields)]
+    system = (
+        "Tu remplis un formulaire de candidature de stage, en français. "
+        "RÈGLE ABSOLUE : n'invente aucune compétence, expérience ni chiffre ; "
+        "utilise uniquement le profil fourni. Pour un 'select', 'valeur' DOIT "
+        "être EXACTEMENT l'une des options proposées (ou \"\" si rien ne "
+        "convient). Pour un 'textarea' de motivation, rédige 2 à 4 phrases "
+        "sincères (sans parenthèses, sans formule bateau). Réponds UNIQUEMENT "
+        "en JSON : {\"remplir\": [{\"i\": <int>, \"valeur\": \"...\"}]}"
+    )
+    user = (
+        f"PROFIL: {_candidate_brief(p)}\n"
+        f"OFFRE: {offer.get('title')} — {offer.get('company') or offer.get('site')}\n"
+        f"CHAMPS: {_json.dumps(cat, ensure_ascii=False)}"
+    )
+    try:
+        from applypilot.llm import get_client
+        raw = get_client().chat(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            max_tokens=900, temperature=0.3)
+    except Exception as exc:
+        log.debug("smart_fill LLM: %s", exc)
+        return 0
+
+    import re as _re
+    m = _re.search(r"\{.*\}", raw or "", _re.DOTALL)
+    if not m:
+        return 0
+    try:
+        data = _json.loads(m.group(0))
+    except ValueError:
+        return 0
+
+    selects = page.locator("select")
+    textareas = page.locator("textarea")
+    done = 0
+    for item in data.get("remplir", []):
+        try:
+            i = int(item.get("i"))
+            val = (item.get("valeur") or "").strip()
+            if not val or i >= len(fields):
+                continue
+            f = fields[i]
+            if f["kind"] == "select":
+                try:
+                    selects.nth(f["nth"]).select_option(label=val, timeout=3000)
+                    done += 1
+                except Exception:
+                    # repli : option dont le texte contient la valeur
+                    for opt in f["options"]:
+                        if val.lower() in opt.lower():
+                            selects.nth(f["nth"]).select_option(label=opt, timeout=3000)
+                            done += 1
+                            break
+            elif f["kind"] == "textarea":
+                ta = textareas.nth(f["nth"])
+                if not (ta.input_value() or "").strip():
+                    ta.fill(val, timeout=3000)
+                    done += 1
+        except Exception:
+            continue
+    return done
+
+
 def _upload_cv(page, cv_path: str) -> bool:
     """Joint le CV au PREMIER champ fichier, UNE SEULE FOIS (idempotent) : si un
     fichier y est déjà, on ne retéléverse pas (sinon « Vous ne pouvez plus
@@ -372,6 +499,8 @@ def apply_to_offer(offer: dict, cv_path: str | None = None,
         # On ne touche jamais aux champs déjà remplis ; on saute connexion/CAPTCHA.
         if not headless and keep_open_seconds > 0:
             waited = 0
+            prof = _profile()
+            smart_seen: set = set()  # signatures de pages déjà traitées par Groq
             while waited < keep_open_seconds:
                 try:
                     if page.is_closed():
@@ -384,7 +513,8 @@ def apply_to_offer(offer: dict, cv_path: str | None = None,
                     # candidature (bouton Postuler), puis remplir.
                     if not _form_present(page):
                         _trigger_apply(page)
-                    _fill_known_fields(page, _profile())
+                    _fill_known_fields(page, prof)         # champs texte (gratuit)
+                    _smart_fill(page, offer, prof, smart_seen)  # déroulants + lettre (Groq)
                     if cv_path:
                         _upload_cv(page, cv_path)
                 except Exception:
