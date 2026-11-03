@@ -175,7 +175,8 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/status — état du pipeline\n"
         "/pause — mettre en pause la recherche quotidienne auto\n"
         "/resume — la réactiver\n"
-        "/clean — nettoyer la discussion (messages < 48 h)\n\n"
+        "/clean — nettoyer la discussion (messages < 48 h)\n"
+        "/job — jobs étudiants + intérim dispo (défaut : Bourges)\n\n"
         "Sur chaque offre : ✅ Valider · ✏️ Modifier · ❌ Ignorer.\n"
         "Je ne soumets jamais rien sans ton ✅.")
 
@@ -260,6 +261,47 @@ async def clean_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                      "(Telegram empêche de supprimer les messages de plus de 48 h.)")
     except Exception:
         pass
+
+
+async def _send_job_list(bot, chat_id: int, titre: str, jobs: list[dict]) -> None:
+    """Envoie une liste de jobs (jobs étudiants / intérim) en messages HTML."""
+    if not jobs:
+        await bot.send_message(chat_id, f"{titre} : aucune offre trouvée.")
+        return
+    header = f"<b>{html.escape(titre)}</b> — {len(jobs)} offre(s)\n\n"
+    lines, chunks, cur = [], [], header
+    for j in jobs:
+        t = html.escape((j.get("title") or "")[:90])
+        comp = html.escape((j.get("employer_name") or "")[:40])
+        loc = html.escape((j.get("location") or "")[:40])
+        url = j.get("url") or ""
+        entry = (f"• <b>{t}</b>\n  {comp}" + (f" · {loc}" if loc else "")
+                 + f"\n  <a href=\"{html.escape(url)}\">Voir l'offre</a>\n\n")
+        if len(cur) + len(entry) > 3800:
+            chunks.append(cur)
+            cur = ""
+        cur += entry
+    if cur.strip():
+        chunks.append(cur)
+    for ch in chunks:
+        await bot.send_message(chat_id, ch, parse_mode=ParseMode.HTML,
+                               disable_web_page_preview=True)
+
+
+async def job_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Jobs étudiants + missions intérim actuellement dispo (défaut : Bourges).
+    Usage : /job  ou  /job Orléans"""
+    if not _authorized(update):
+        return await _deny(update)
+    ville = " ".join(context.args).strip() if context.args else "Bourges"
+    chat_id = update.effective_chat.id
+    await context.bot.send_message(
+        chat_id, f"🔎 Recherche jobs étudiants + missions intérim à {html.escape(ville)}…")
+    from applypilot.discovery import hellowork
+    etu = await asyncio.to_thread(hellowork.search_live, "job étudiant", ville, "", 1, 12)
+    inter = await asyncio.to_thread(hellowork.search_live, "", ville, "Travail_temp", 1, 12)
+    await _send_job_list(context.bot, chat_id, f"🎓 Jobs étudiants — {ville}", etu)
+    await _send_job_list(context.bot, chat_id, f"🛠️ Missions intérim — {ville}", inter)
 
 
 # ---------------------------------------------------------------------------
@@ -393,6 +435,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("pause", pause_cmd))
     app.add_handler(CommandHandler("resume", resume_cmd))
     app.add_handler(CommandHandler("clean", clean_cmd))
+    app.add_handler(CommandHandler("job", job_cmd))
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     if app.job_queue is not None:

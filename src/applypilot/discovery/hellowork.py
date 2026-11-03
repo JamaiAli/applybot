@@ -141,13 +141,50 @@ def _fetch_detail(client: httpx.Client, url: str) -> dict:
         return {}
 
 
-def _fetch(client: httpx.Client, query: str, contract: str, page: int) -> str:
-    params = {"k": query, "c": contract}
+def _fetch(client: httpx.Client, query: str, contract: str, page: int,
+           location: str = "") -> str:
+    params = {}
+    if query:
+        params["k"] = query
+    if contract:
+        params["c"] = contract
+    if location:
+        params["l"] = location
     if page > 1:
         params["p"] = page
     r = client.get(SEARCH_URL, params=params, headers=_HEADERS, timeout=20)
     r.raise_for_status()
     return r.text
+
+
+def search_live(query: str = "", location: str = "", contract: str = "",
+                max_pages: int = 1, limit: int = 15) -> list[dict]:
+    """Recherche HelloWork « à la volée » (SANS insertion en base) — pour /job.
+    Renvoie une liste de {url, title, employer_name, location, ...} plafonnée.
+
+    Contrats HelloWork : "" (tous), "Stage", "Alternance", "CDI", "CDD",
+    "Travail_temp" (= Intérim).
+    """
+    out: list[dict] = []
+    seen: set[str] = set()
+    try:
+        with httpx.Client(follow_redirects=True) as client:
+            for page in range(1, max_pages + 1):
+                html = _fetch(client, query, contract, page, location)
+                cards = _parse_cards(html)
+                if not cards:
+                    break
+                for c in cards:
+                    if c["url"] in seen:
+                        continue
+                    seen.add(c["url"])
+                    out.append(c)
+                    if len(out) >= limit:
+                        return out
+                time.sleep(1.0)
+    except Exception as e:
+        log.warning("HelloWork search_live échouée (%s / %s) : %s", query, location, e)
+    return out
 
 
 def _insert_jobs(conn, jobs: list[dict]) -> tuple[int, int]:
