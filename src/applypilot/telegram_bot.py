@@ -27,6 +27,8 @@ import datetime as _dt
 import html
 import logging
 import os
+import subprocess
+import sys
 
 from applypilot import config
 
@@ -257,6 +259,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "📨 Préparation de ta candidature : génération du CV adapté "
             "(tes expériences réelles, aucune invention)… ~10 s.")
         row = bot_core.fetch_one(url) or {}
+        pdf = None
         try:
             from applypilot import cv_latex
             pdf = await asyncio.to_thread(cv_latex.generate_cv, row)
@@ -271,13 +274,35 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 query.message.chat_id, f"⚠️ Échec de la génération du CV : {exc}")
         link = row.get("application_url") or row.get("url") or ""
         bot_core.set_apply_status(url, "prepared")
+
+        # Ouvre le formulaire pré-rempli dans un navigateur VISIBLE sur le PC
+        # (processus détaché : tu finis à la main — upload + clic Postuler).
+        opened = False
+        try:
+            cmd = [sys.executable, "-m", "applypilot.autoapply", "--url", url]
+            if pdf:
+                cmd += ["--cv", str(pdf)]
+            subprocess.Popen(cmd, cwd=os.getcwd(),
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            opened = True
+        except Exception as exc:
+            log.warning("Lancement du navigateur échoué : %s", exc)
+
+        msg = ["✅ <b>Candidature prête.</b>"]
+        if opened:
+            msg.append("🖥️ J'ouvre le <b>formulaire pré-rempli dans un navigateur "
+                       "sur ton PC</b> (~15 s). Là-bas : vérifie, <b>téléverse le CV</b> "
+                       "si besoin, puis clique <b>Postuler</b>.")
+            msg.append("Si une <b>connexion</b> ou un <b>CAPTCHA</b> apparaît, fais-le "
+                       "toi-même dans la fenêtre, puis relance « Préparer ».")
+        else:
+            msg.append("Pour postuler :")
+            msg.append(f'1️⃣ Télécharge le CV ci-dessus.\n2️⃣ Ouvre l\'offre : '
+                       f'<a href="{html.escape(link)}">lien</a>\n'
+                       "3️⃣ Clique « Postuler », connecte-toi, téléverse le CV, Envoie.")
+        msg.append("\nQuand c'est fait, appuie sur ✅ J'ai postulé.")
         await context.bot.send_message(
-            query.message.chat_id,
-            "✅ <b>Candidature prête.</b> Pour postuler :\n"
-            "1️⃣ Télécharge le CV ci-dessus.\n"
-            f'2️⃣ Ouvre l\'offre : <a href="{html.escape(link)}">lien de l\'offre</a>\n'
-            "3️⃣ Clique « Postuler », connecte-toi si besoin, téléverse le CV, Envoie.\n\n"
-            "Quand c'est fait, appuie sur ✅ J'ai postulé.",
+            query.message.chat_id, "\n".join(msg),
             parse_mode=ParseMode.HTML, disable_web_page_preview=True)
         return
 
