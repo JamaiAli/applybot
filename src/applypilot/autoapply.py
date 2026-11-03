@@ -112,6 +112,51 @@ def _follow_to_employer(page, offer: dict) -> str:
     return page.url
 
 
+# Boutons qui mènent au formulaire de candidature, selon les ATS.
+_APPLY_SELECTOR = (
+    "a:has-text('Postuler'), button:has-text('Postuler'), "
+    "a:has-text('Je postule'), button:has-text('Je postule'), "
+    "a:has-text('Candidater'), button:has-text('Candidater'), "
+    "a:has-text('Déposer'), button:has-text('Déposer'), "
+    "button:has-text('candidature'), a:has-text('candidature'), "
+    "a:has-text('Apply'), button:has-text('Apply')"
+)
+
+
+def _form_present(page) -> bool:
+    """Un formulaire de candidature semble présent (champ fichier, ou >=2 champs
+    texte éditables)."""
+    try:
+        if page.locator("input[type='file']").count() > 0:
+            return True
+        return page.locator(
+            "input[type='text'], input[type='email'], input[type='tel'], "
+            "textarea").count() >= 2
+    except Exception:
+        return False
+
+
+def _trigger_apply(page) -> bool:
+    """Cherche dans TOUTE la page un bouton « Postuler/Candidater… » et le clique
+    (en le faisant défiler à l'écran). Renvoie True si un clic a eu lieu."""
+    try:
+        btns = page.locator(_APPLY_SELECTOR)
+        for i in range(min(btns.count(), 5)):
+            b = btns.nth(i)
+            try:
+                if not b.is_visible():
+                    continue
+                b.scroll_into_view_if_needed(timeout=2000)
+                b.click(timeout=4000)
+                page.wait_for_load_state("domcontentloaded", timeout=12000)
+                return True
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return False
+
+
 # JS : pour chaque input/textarea, renvoie son LIBELLÉ (aria-label, <label for>,
 # label englobant, ou le texte le plus proche au-dessus — ex. une question),
 # plus name/placeholder. Indispensable pour les formulaires type Wizbii où le
@@ -241,15 +286,9 @@ def _wait_login_then_fill(page, offer: dict, cv_path: str | None, timeout: int) 
             waited += 3
             if _looks_like_login(page.url, page):
                 continue  # toujours sur la page de connexion
-            # Connecté : tenter d'ouvrir le formulaire puis remplir.
-            try:
-                btn = page.locator(
-                    "a:has-text('Postuler'), button:has-text('Postuler')").first
-                if btn.count() > 0:
-                    btn.click(timeout=4000)
-                    page.wait_for_load_state("domcontentloaded", timeout=10000)
-            except Exception:
-                pass
+            # Connecté : atteindre le formulaire (bouton Postuler) si besoin.
+            if not _form_present(page):
+                _trigger_apply(page)
             if _looks_like_login(page.url, page):
                 continue
             res = _fill_and_report(page, offer, cv_path)
@@ -267,16 +306,10 @@ def _run_flow(page, offer: dict, cv_path: str | None) -> dict:
     result = {"status": "error", "url": None, "message": "", "screenshot": None}
     final = _follow_to_employer(page, offer)
 
-    # Sur la page employeur (ex. Wizbii) : déclencher « Postuler » pour ouvrir
-    # le formulaire (si un simple lien/bouton le fait).
-    try:
-        btn = page.locator(
-            "a:has-text('Postuler'), button:has-text('Postuler')").first
-        if btn.count() > 0:
-            btn.click(timeout=5000)
-            page.wait_for_load_state("domcontentloaded", timeout=15000)
-    except Exception:
-        pass
+    # Sur la page employeur : si pas déjà sur un formulaire, chercher et cliquer
+    # « Postuler/Candidater… » pour l'ouvrir.
+    if not _form_present(page):
+        _trigger_apply(page)
     final = page.url
 
     if _has_captcha(page):
@@ -347,6 +380,10 @@ def apply_to_offer(offer: dict, cv_path: str | None = None,
                     waited += 5
                     if _has_captcha(page) or _looks_like_login(page.url, page):
                         continue
+                    # Pas encore sur un formulaire -> tenter d'atteindre la
+                    # candidature (bouton Postuler), puis remplir.
+                    if not _form_present(page):
+                        _trigger_apply(page)
                     _fill_known_fields(page, _profile())
                     if cv_path:
                         _upload_cv(page, cv_path)
