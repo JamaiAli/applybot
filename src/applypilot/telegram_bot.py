@@ -406,8 +406,9 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             log.warning("jobapply lancement navigateur : %s", exc)
         parts = []
         if opened:
-            parts.append("🖥️ <b>Sur ton PC</b> : le formulaire s'ouvre pré-rempli "
-                         "avec ton CV job étudiant.")
+            parts.append("🖥️ <b>Sur ton PC</b> : la fenêtre s'ouvre avec un bouton "
+                         "<b>« 📝 Compléter le formulaire »</b> en haut — clique-le "
+                         "pour remplir avec ton CV job étudiant.")
         parts.append(f'📱 <b>Sur ton téléphone</b> : ouvre l\'offre et postule à la '
                      f'main (CV ci-dessus) → <a href="{html.escape(url)}">lien de l\'offre</a>')
         parts.append("Connexion/CAPTCHA = à toi.")
@@ -455,9 +456,10 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
         msg = ["✅ <b>Candidature prête.</b>"]
         if opened:
-            msg.append("🖥️ <b>Sur ton PC</b> : le formulaire s'ouvre pré-rempli "
-                       "automatiquement — vérifie, téléverse le CV si besoin, "
-                       "puis clique Postuler.")
+            msg.append("🖥️ <b>Sur ton PC</b> : la fenêtre s'ouvre avec un bouton "
+                       "<b>« 📝 Compléter le formulaire »</b> en haut. Connecte-toi "
+                       "si besoin, clique-le pour tout remplir (champs + CV), "
+                       "vérifie et clique Postuler.")
         msg.append(f'📱 <b>Sur ton téléphone</b> : ouvre l\'offre et postule à la '
                    f'main (le CV est juste au-dessus) → '
                    f'<a href="{html.escape(link)}">lien de l\'offre</a>')
