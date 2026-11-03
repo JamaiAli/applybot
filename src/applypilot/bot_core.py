@@ -76,25 +76,34 @@ def display_company(row: dict) -> str:
     return (row.get("company") or "").strip() or (row.get("site") or "—")
 
 
-def fetch_pending_offers(min_score: int = MIN_SCORE, limit: int = MAX_CARDS) -> list[dict]:
-    """Offres scorées, éligibles, non encore décidées (ni validées, ni ignorées,
-    ni déjà candidatées), triées par score décroissant."""
+def fetch_pending_offers(min_score: int = MIN_SCORE, limit: int = MAX_CARDS,
+                         strategy: str = "hellowork_scrape") -> list[dict]:
+    """Offres scorées, éligibles, non décidées, de la source `strategy`
+    (HelloWork par défaut). Triées des PLUS RÉCENTES aux plus anciennes
+    (date de publication), le score départageant les dates égales."""
     conn = get_connection()
     conn.row_factory = sqlite3.Row
+    params: list = [min_score]
+    strat_clause = ""
+    if strategy:
+        strat_clause = "AND strategy = ?"
+        params.append(strategy)
+    params.append(limit)
     rows = conn.execute(
-        """
+        f"""
         SELECT url, title, company, site, location, fit_score, score_reasoning,
-               application_url, tailored_resume_path, cover_letter_path
+               application_url, tailored_resume_path, cover_letter_path, posted_at
         FROM jobs
         WHERE fit_score IS NOT NULL
           AND fit_score >= ?
           AND (eligibility IS NULL OR eligibility = 'eligible')
           AND COALESCE(apply_status, '') NOT IN
               ('applied', 'validated', 'ignored', 'skip_handicap')
-        ORDER BY fit_score DESC, scored_at DESC
+          {strat_clause}
+        ORDER BY (posted_at IS NULL), posted_at DESC, fit_score DESC
         LIMIT ?
         """,
-        (min_score, limit),
+        params,
     ).fetchall()
     return [dict(r) for r in rows]
 

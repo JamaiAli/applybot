@@ -90,6 +90,28 @@ async def _deny(update: Update) -> None:
 # ---------------------------------------------------------------------------
 # Rendu d'une offre
 # ---------------------------------------------------------------------------
+def _format_posted(posted_at: str | None) -> str | None:
+    """Date de publication en français : « aujourd'hui », « hier »,
+    « il y a N jours (JJ/MM) »."""
+    if not posted_at:
+        return None
+    try:
+        s = posted_at.replace("Z", "+00:00")
+        d = _dt.datetime.fromisoformat(s)
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=_dt.timezone.utc)
+        now = _dt.datetime.now(_dt.timezone.utc)
+        days = (now.date() - d.date()).days
+        date_str = d.strftime("%d/%m/%Y")
+        if days <= 0:
+            return f"aujourd'hui ({date_str})"
+        if days == 1:
+            return f"hier ({date_str})"
+        return f"il y a {days} jours ({date_str})"
+    except (ValueError, TypeError):
+        return None
+
+
 def _offer_text(row: dict) -> str:
     score = row.get("fit_score")
     title = html.escape((row.get("title") or "Offre")[:250])
@@ -97,6 +119,9 @@ def _offer_text(row: dict) -> str:
     lines = [f"<b>{title}</b>", f"🏢 {company}   ·   ⭐ <b>{score}/10</b>"]
     if row.get("location"):
         lines.append(f"📍 {html.escape(str(row['location'])[:100])}")
+    posted = _format_posted(row.get("posted_at"))
+    if posted:
+        lines.append(f"🗓 Publiée {posted}")
     reason = (row.get("score_reasoning") or "").strip()
     if reason:
         lines.append("")
