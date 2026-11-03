@@ -458,10 +458,18 @@ def generate_cv(offer: dict, out_name: str | None = None) -> Path:
     Lève RuntimeError/FileNotFoundError en cas d'échec (données ou compilation).
     """
     exp_data = load_experiences()
-    # On tente d'abord la sélection Groq ; en cas d'échec de compilation, on
-    # retombe sur la sélection déterministe (profil « propre », sans texte LLM).
+    # On tente la sélection Groq (accroche rédigée par le LLM, adaptée à l'offre)
+    # avec plusieurs relances : le secours ne sert qu'en dernier recours.
+    import time as _t
     selections = []
-    llm_sel = _llm_selection(offer, exp_data)
+    llm_sel = None
+    for attempt in range(3):
+        llm_sel = _llm_selection(offer, exp_data)
+        if llm_sel:
+            break
+        if attempt < 2:
+            log.info("Accroche LLM indisponible, relance (%d/3)…", attempt + 2)
+            _t.sleep(3)
     if llm_sel:
         selections.append(llm_sel)
     selections.append(_default_selection(exp_data, offer))
