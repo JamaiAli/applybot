@@ -158,6 +158,31 @@ def mark_notified(urls: list[str]) -> None:
         log.warning("Impossible d'écrire %s : %s", _NOTIFIED_PATH, exc)
 
 
+_CARDS_PATH = config.APP_DIR / "card_messages.json"
+
+
+def _load_cards() -> dict[str, int]:
+    try:
+        return json.loads(_CARDS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def set_card_message(url: str, message_id: int) -> None:
+    """Associe l'offre (par hash) au message Telegram qui l'affiche, pour
+    pouvoir le supprimer du fil après décision."""
+    d = _load_cards()
+    d[url_hash(url)] = int(message_id)
+    try:
+        _CARDS_PATH.write_text(json.dumps(d), encoding="utf-8")
+    except OSError as exc:
+        log.warning("Impossible d'écrire %s : %s", _CARDS_PATH, exc)
+
+
+def get_card_message(url: str) -> int | None:
+    return _load_cards().get(url_hash(url))
+
+
 _LAST_PREPARED = config.APP_DIR / "last_prepared.txt"
 
 

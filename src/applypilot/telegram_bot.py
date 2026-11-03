@@ -154,10 +154,11 @@ def _offer_keyboard(h: str, done: bool = False) -> InlineKeyboardMarkup:
 
 async def _send_offer(bot, chat_id: int, row: dict) -> None:
     h = bot_core.remember(row["url"])
-    await bot.send_message(chat_id, _offer_text(row),
-                           parse_mode=ParseMode.HTML,
-                           disable_web_page_preview=True,
-                           reply_markup=_offer_keyboard(h))
+    msg = await bot.send_message(chat_id, _offer_text(row),
+                                 parse_mode=ParseMode.HTML,
+                                 disable_web_page_preview=True,
+                                 reply_markup=_offer_keyboard(h))
+    bot_core.set_card_message(row["url"], msg.message_id)  # pour suppression auto
     for path in bot_core.attachment_paths(row):
         try:
             with open(path, "rb") as fh:
@@ -329,10 +330,16 @@ async def done_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     row = bot_core.fetch_one(url) or {}
     bot_core.set_apply_status(url, "applied")
+    # Supprime la carte de l'offre déjà affichée dans le fil.
+    mid = bot_core.get_card_message(url)
+    if mid:
+        try:
+            await context.bot.delete_message(update.effective_chat.id, mid)
+        except Exception:
+            pass
     titre = (row.get("title") or "l'offre")[:80]
     await update.message.reply_text(
-        f"✅ Marquée « postulée » : {titre}. Bravo 🎉 "
-        "Elle ne réapparaîtra plus dans /offres.")
+        f"✅ Marquée « postulée » : {titre}. Bravo 🎉")
 
 
 async def job_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -463,14 +470,18 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if action == "ok":
         bot_core.set_apply_status(url, "applied")
         await query.answer("✅ Marquée postulée")
-        await query.edit_message_reply_markup(reply_markup=_offer_keyboard(h, done=True))
-        await context.bot.send_message(
-            query.message.chat_id, "✅ Offre marquée « postulée ». Bravo 🎉")
+        try:
+            await query.message.delete()  # retire la carte du fil
+        except Exception:
+            await query.edit_message_reply_markup(reply_markup=_offer_keyboard(h, done=True))
 
     elif action == "no":
         bot_core.set_apply_status(url, "ignored")
         await query.answer("❌ Ignorée")
-        await query.edit_message_reply_markup(reply_markup=_offer_keyboard(h, done=True))
+        try:
+            await query.message.delete()  # retire la carte du fil
+        except Exception:
+            await query.edit_message_reply_markup(reply_markup=_offer_keyboard(h, done=True))
 
     elif action == "edit":
         # Telegram n'a pas de modal : on attend le prochain message texte.
