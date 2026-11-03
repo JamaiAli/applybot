@@ -27,6 +27,7 @@ Pas de LLM. HTTP + parsing HTML (httpx + BeautifulSoup).
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import time
@@ -35,7 +36,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from applypilot import config
-from applypilot.database import get_connection, init_db
+from applypilot.database import get_connection, init_db, transition_state
 from applypilot.discovery.ats_common import insert_normalized_jobs
 
 log = logging.getLogger(__name__)
@@ -97,6 +98,49 @@ def _parse_cards(html: str) -> list[dict]:
     return jobs
 
 
+def _jsonld_jobposting(html: str) -> dict:
+    """Extrait le JSON-LD schema.org JobPosting d'une page d'offre HelloWork :
+    description COMPLÈTE + entreprise + lieu + date. Données structurées =
+    stables (bien plus fiable que le parsing HTML)."""
+    soup = BeautifulSoup(html, "html.parser")
+    for s in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        raw = s.string or s.get_text() or ""
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            continue
+        for it in (data if isinstance(data, list) else [data]):
+            if not isinstance(it, dict):
+                continue
+            t = it.get("@type")
+            if t == "JobPosting" or (isinstance(t, list) and "JobPosting" in t):
+                desc = BeautifulSoup(it.get("description") or "", "html.parser").get_text(" ", strip=True)
+                org = (it.get("hiringOrganization") or {})
+                loc = it.get("jobLocation") or {}
+                if isinstance(loc, list):
+                    loc = loc[0] if loc else {}
+                addr = (loc.get("address") or {}) if isinstance(loc, dict) else {}
+                city = addr.get("addressLocality")
+                return {
+                    "full_description": desc or None,
+                    "employer_name": org.get("name") if isinstance(org, dict) else None,
+                    "location": city,
+                    "posted_at": it.get("datePosted"),
+                }
+    return {}
+
+
+def _fetch_detail(client: httpx.Client, url: str) -> dict:
+    """Récupère la description complète d'une offre via son JSON-LD."""
+    try:
+        r = client.get(url, headers=_HEADERS, timeout=20)
+        r.raise_for_status()
+        return _jsonld_jobposting(r.text)
+    except Exception as e:
+        log.debug("HelloWork détail %s : %s", url, e)
+        return {}
+
+
 def _fetch(client: httpx.Client, query: str, contract: str, page: int) -> str:
     params = {"k": query, "c": contract}
     if page > 1:
@@ -124,6 +168,10 @@ def run_hellowork_discovery(workers: int = 1) -> dict:
     contract = str(cfg.get("contract", "Stage"))
     max_pages = int(cfg.get("max_pages", 2))
     delay = float(cfg.get("delay_seconds", 2.0))
+    fetch_details = bool(cfg.get("fetch_details", True))   # description complète via JSON-LD
+    detail_delay = float(cfg.get("detail_delay", 1.0))
+    max_details = int(cfg.get("max_details", 80))          # plafond de pages détail/run
+    details_left = max_details
 
     conn = get_connection()
     init_db()
@@ -134,6 +182,36 @@ def run_hellowork_discovery(workers: int = 1) -> dict:
     log.info("HelloWork : %d requête(s), max %d page(s)/requête (rythme lent)",
              len(queries), max_pages)
     with httpx.Client(follow_redirects=True) as client:
+        # Backfill : complète les descriptions manquantes des offres HelloWork
+        # déjà en base (via leur JSON-LD), pour qu'elles deviennent scorables.
+        if fetch_details:
+            rows = conn.execute(
+                "SELECT url FROM jobs WHERE strategy = ? "
+                "AND (full_description IS NULL OR full_description = '') "
+                "LIMIT ?", (STRATEGY, max_details)).fetchall()
+            back = 0
+            for (u,) in rows:
+                if details_left <= 0:
+                    break
+                detail = _fetch_detail(client, u)
+                details_left -= 1
+                if detail.get("full_description"):
+                    conn.execute(
+                        "UPDATE jobs SET full_description = ?, description = ?, "
+                        "posted_at = COALESCE(?, posted_at) WHERE url = ?",
+                        (detail["full_description"], detail["full_description"][:500],
+                         detail.get("posted_at"), u))
+                    conn.commit()
+                    try:
+                        transition_state(conn, u, "enriched",
+                                         reason="hellowork jsonld", force=True)
+                    except Exception:
+                        pass
+                    back += 1
+                time.sleep(detail_delay)
+            if back:
+                log.info("HelloWork : %d description(s) complétée(s) (backfill)", back)
+
         for query in queries:
             for page in range(1, max_pages + 1):
                 try:
@@ -146,6 +224,24 @@ def run_hellowork_discovery(workers: int = 1) -> dict:
                 jobs = _parse_cards(html)
                 if not jobs:
                     break  # plus de résultats
+                # Enrichit chaque offre avec sa description complète (JSON-LD),
+                # dans la limite du plafond, à rythme lent.
+                if fetch_details:
+                    for job in jobs:
+                        if details_left <= 0:
+                            break
+                        detail = _fetch_detail(client, job["url"])
+                        details_left -= 1
+                        if detail.get("full_description"):
+                            job["full_description"] = detail["full_description"]
+                            job["description"] = detail["full_description"][:500]
+                        if detail.get("employer_name"):
+                            job["employer_name"] = detail["employer_name"]
+                        if detail.get("location"):
+                            job["location"] = detail["location"]
+                        if detail.get("posted_at"):
+                            job["posted_at"] = detail["posted_at"]
+                        time.sleep(detail_delay)
                 new, existing = insert_normalized_jobs(conn, jobs, DEFAULT_SITE, STRATEGY)
                 grand_new += new
                 grand_existing += existing
