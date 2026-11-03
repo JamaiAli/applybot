@@ -174,7 +174,8 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/offres — afficher les offres à valider (sans relancer la recherche)\n"
         "/status — état du pipeline\n"
         "/pause — mettre en pause la recherche quotidienne auto\n"
-        "/resume — la réactiver\n\n"
+        "/resume — la réactiver\n"
+        "/clean — nettoyer la discussion (messages < 48 h)\n\n"
         "Sur chaque offre : ✅ Valider · ✏️ Modifier · ❌ Ignorer.\n"
         "Je ne soumets jamais rien sans ton ✅.")
 
@@ -232,6 +233,33 @@ async def resume_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return await _deny(update)
     context.application.bot_data["auto_search"] = True
     await update.message.reply_text("▶️ Recherche auto réactivée.")
+
+
+async def clean_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Supprime les messages récents de la discussion (le bot peut effacer ses
+    propres messages ET les tiens en chat privé, ceux de moins de 48 h).
+    Usage : /clean (200 derniers) ou /clean 500."""
+    if not _authorized(update):
+        return await _deny(update)
+    chat_id = update.effective_chat.id
+    last = update.message.message_id
+    n = 200
+    if context.args and context.args[0].isdigit():
+        n = min(int(context.args[0]), 1000)
+    deleted = 0
+    for mid in range(last, max(last - n, 1), -1):
+        try:
+            await context.bot.delete_message(chat_id, mid)
+            deleted += 1
+        except Exception:
+            pass  # message trop vieux (>48 h), déjà supprimé, ou inexistant
+        await asyncio.sleep(0.03)  # évite le flood-limit Telegram
+    try:
+        await context.bot.send_message(
+            chat_id, f"🧹 Discussion nettoyée — {deleted} message(s) supprimé(s). "
+                     "(Telegram empêche de supprimer les messages de plus de 48 h.)")
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -364,6 +392,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(CommandHandler("pause", pause_cmd))
     app.add_handler(CommandHandler("resume", resume_cmd))
+    app.add_handler(CommandHandler("clean", clean_cmd))
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     if app.job_queue is not None:
