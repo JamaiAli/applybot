@@ -1054,5 +1054,17 @@ def bot() -> None:
     run_bot()
 
 
+@app.command(name="telegram-bot")
+def telegram_bot() -> None:
+    """Lancer le pilotage Telegram (recherche, offres, boutons ✅/✏️/❌).
+
+    Nécessite TELEGRAM_BOT_TOKEN et TELEGRAM_USER_ID dans ~/.applypilot/.env.
+    """
+    _bootstrap()
+    from applypilot.telegram_bot import main as run_tg
+
+    run_tg()
+
+
 if __name__ == "__main__":
     app()

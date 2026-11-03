@@ -34,6 +34,7 @@ dependencies = [
     "python-docx>=1.1",
     "pypdf>=6.13.3",  # CVE-2026-48156/48155/48735/49461/49460/54531/54530 + GHSA-jm82-fx9c-mx94
     "discord.py>=2.4,<3",  # pilotage Discord (Phase 4)
+    "python-telegram-bot[job-queue]>=21,<22",  # pilotage Telegram (Phase 4)
     ]
 
 [project.optional-dependencies]
