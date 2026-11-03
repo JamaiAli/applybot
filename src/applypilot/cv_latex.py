@@ -394,16 +394,19 @@ def _compile(tex_path: Path) -> Path:
     """Compile le .tex en PDF dans son dossier. Renvoie le chemin du PDF."""
     workdir = tex_path.parent
     pdf_path = tex_path.with_suffix(".pdf")
+    # On PRÉFÈRE pdflatex (vrai .exe MiKTeX, sans dépendance Perl) à latexmk
+    # (script Perl qui échoue silencieusement si Perl n'est pas installé — cas
+    # fréquent sous PowerShell/Windows).
+    pdflatex = shutil.which("pdflatex")
     latexmk = shutil.which("latexmk")
-    if latexmk:
-        cmd = [latexmk, "-pdf", "-interaction=nonstopmode", "-halt-on-error", tex_path.name]
-    else:
-        pdflatex = shutil.which("pdflatex")
-        if not pdflatex:
-            raise RuntimeError("Ni latexmk ni pdflatex trouvés (installe MiKTeX).")
+    if pdflatex:
         cmd = [pdflatex, "-interaction=nonstopmode", "-halt-on-error", tex_path.name]
-    # Deux passes avec pdflatex seul ; latexmk gère les reruns lui-même.
-    passes = 1 if latexmk else 2
+        passes = 2  # 2 passes pour tikz/hyperref
+    elif latexmk:
+        cmd = [latexmk, "-pdf", "-interaction=nonstopmode", "-halt-on-error", tex_path.name]
+        passes = 1
+    else:
+        raise RuntimeError("pdflatex introuvable — installe MiKTeX.")
     last = None
     for _ in range(passes):
         last = subprocess.run(cmd, cwd=str(workdir), capture_output=True,
