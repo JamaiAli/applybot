@@ -503,22 +503,31 @@ def apply_to_offer(offer: dict, cv_path: str | None = None,
             smart_seen: set = set()  # signatures de pages déjà traitées par Groq
             while waited < keep_open_seconds:
                 try:
-                    if page.is_closed():
-                        break
                     time.sleep(5)
                     waited += 5
-                    if _has_captcha(page) or _looks_like_login(page.url, page):
+                    # Onglet actif = le PLUS RÉCENT non fermé du contexte : gère
+                    # le cas HelloWork -> redirection vers le site du recruteur
+                    # dans un NOUVEL onglet (on remplit les deux).
+                    opened = [pg for pg in ctx.pages if not pg.is_closed()]
+                    if not opened:
+                        break
+                    cur = opened[-1]
+                    try:
+                        cur.bring_to_front()
+                    except Exception:
+                        pass
+                    if _has_captcha(cur) or _looks_like_login(cur.url, cur):
                         continue
                     # Pas encore sur un formulaire -> tenter d'atteindre la
                     # candidature (bouton Postuler), puis remplir.
-                    if not _form_present(page):
-                        _trigger_apply(page)
-                    _fill_known_fields(page, prof)         # champs texte (gratuit)
-                    _smart_fill(page, offer, prof, smart_seen)  # déroulants + lettre (Groq)
+                    if not _form_present(cur):
+                        _trigger_apply(cur)
+                    _fill_known_fields(cur, prof)              # champs texte (gratuit)
+                    _smart_fill(cur, offer, prof, smart_seen)  # déroulants + lettre (Groq)
                     if cv_path:
-                        _upload_cv(page, cv_path)
+                        _upload_cv(cur, cv_path)
                 except Exception:
-                    break
+                    continue
         try:
             ctx.close()
         except Exception:
