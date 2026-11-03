@@ -110,11 +110,14 @@ def _offer_keyboard(h: str, done: bool = False) -> InlineKeyboardMarkup:
     if done:
         return InlineKeyboardMarkup([[InlineKeyboardButton("— décision enregistrée —",
                                                             callback_data="noop")]])
-    return InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ Valider", callback_data=f"ok:{h}"),
-        InlineKeyboardButton("✏️ Modifier", callback_data=f"edit:{h}"),
-        InlineKeyboardButton("❌ Ignorer", callback_data=f"no:{h}"),
-    ]])
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📄 Générer le CV adapté", callback_data=f"cv:{h}")],
+        [
+            InlineKeyboardButton("✅ Valider", callback_data=f"ok:{h}"),
+            InlineKeyboardButton("✏️ Modifier", callback_data=f"edit:{h}"),
+            InlineKeyboardButton("❌ Ignorer", callback_data=f"no:{h}"),
+        ],
+    ])
 
 
 async def _send_offer(bot, chat_id: int, row: dict) -> None:
@@ -246,6 +249,28 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     url = bot_core.resolve(h)
     if not url:
         return await query.answer("Offre introuvable (redémarrage ?).", show_alert=True)
+
+    if action == "cv":
+        await query.answer("Génération du CV…")
+        await context.bot.send_message(
+            query.message.chat_id,
+            "📄 Génération du CV adapté à l'offre (sélection de tes expériences "
+            "réelles par l'IA, compilation LaTeX)… ~10 s.")
+        try:
+            from applypilot import cv_latex
+            row = bot_core.fetch_one(url) or {}
+            pdf = await asyncio.to_thread(cv_latex.generate_cv, row)
+            bot_core.set_cv_path(url, str(pdf))
+            with open(pdf, "rb") as fh:
+                await context.bot.send_document(
+                    query.message.chat_id, InputFile(fh, filename=pdf.name),
+                    caption="✅ CV adapté généré (1 page, tes données réelles, "
+                            "aucune invention). Vérifie-le, puis ✅ Valider.")
+        except Exception as exc:
+            log.exception("Génération CV échouée : %s", exc)
+            await context.bot.send_message(
+                query.message.chat_id, f"⚠️ Échec de la génération du CV : {exc}")
+        return
 
     if action == "ok":
         bot_core.set_apply_status(url, "validated")

@@ -127,6 +127,14 @@ def set_apply_status(url: str, status: str, note: str | None = None) -> None:
             log.debug("transition_state ignorée pour %s : %s", url, exc)
 
 
+def set_cv_path(url: str, pdf_path: str) -> None:
+    """Enregistre le CV généré comme CV adapté de l'offre."""
+    conn = get_connection()
+    conn.execute("UPDATE jobs SET tailored_resume_path = ? WHERE url = ?",
+                 (pdf_path, url))
+    conn.commit()
+
+
 def attachment_paths(row: dict) -> list[Path]:
     """Chemins des pièces jointes CV/lettre existantes (préfère le .pdf)."""
     out: list[Path] = []
