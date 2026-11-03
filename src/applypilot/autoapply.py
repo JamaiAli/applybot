@@ -491,31 +491,68 @@ def _wait_login_then_fill(page, offer: dict, cv_path: str | None, timeout: int) 
 
 
 def _run_flow(page, offer: dict, cv_path: str | None) -> dict:
-    """Atteint le formulaire, détecte connexion/CAPTCHA, remplit + joint le CV.
-    Ne soumet JAMAIS (l'envoi reste manuel). Renvoie le dict de résultat."""
-    result = {"status": "error", "url": None, "message": "", "screenshot": None}
+    """Ouvre l'offre, essaie d'atteindre le formulaire et injecte le bouton
+    « Compléter ». NE REMPLIT PAS automatiquement : le remplissage se fait quand
+    Ali clique le bouton (géré par la boucle de apply_to_offer)."""
+    result = {"status": "ready", "url": None, "message": "", "screenshot": None}
     final = _follow_to_employer(page, offer)
 
-    # Sur la page employeur : si pas déjà sur un formulaire, chercher et cliquer
-    # « Postuler/Candidater… » pour l'ouvrir.
+    # Si pas déjà sur un formulaire, tenter d'ouvrir la candidature.
     if not _form_present(page):
         _trigger_apply(page)
     final = page.url
 
+    # Injecte le bouton « Compléter le formulaire ».
+    try:
+        page.evaluate(_FILL_BUTTON_JS)
+    except Exception:
+        pass
+
     if _has_captcha(page):
         result.update(status="needs_captcha", url=final,
-                      message="CAPTCHA détecté — à toi de le résoudre, puis de finir.",
-                      screenshot=_screenshot(page, offer))
-        return result
-
-    if _looks_like_login(final, page):
+                      message="CAPTCHA détecté — résous-le, puis clique « Compléter ».")
+    elif _looks_like_login(final, page):
         result.update(status="needs_login", url=final,
-                      message="Connexion requise. Connecte-toi dans cette fenêtre, "
-                              "reviens sur l'offre, puis relance « Préparer ».",
-                      screenshot=_screenshot(page, offer))
-        return result
+                      message="Connexion requise. Connecte-toi dans la fenêtre, "
+                              "puis clique « Compléter le formulaire » en haut.")
+    else:
+        result.update(status="ready", url=final,
+                      message="Formulaire ouvert — clique « Compléter le "
+                              "formulaire » en haut de la page.")
+    return result
 
-    return _fill_and_report(page, offer, cv_path)
+
+# Bouton flottant « Compléter le formulaire » injecté dans la page : Ali clique
+# quand il veut remplir (un clic -> window.__ap_fill_ts ; Python remplit puis met
+# window.__ap_fill_done).
+_FILL_BUTTON_JS = r"""
+(() => {
+  if (!document.body || document.getElementById('__ap_fill_btn')) return;
+  const b = document.createElement('button');
+  b.id = '__ap_fill_btn';
+  b.type = 'button';
+  b.textContent = '📝 Compléter le formulaire';
+  b.style.cssText = 'position:fixed;top:10px;left:50%;transform:translateX(-50%);' +
+    'z-index:2147483647;background:#1F3A5F;color:#fff;border:none;padding:11px 20px;' +
+    'border-radius:10px;font-size:15px;font-weight:700;font-family:sans-serif;' +
+    'cursor:pointer;box-shadow:0 3px 12px rgba(0,0,0,.35)';
+  b.addEventListener('click', (e) => {
+    e.preventDefault();
+    window.__ap_fill_ts = Date.now();
+    b.textContent = '⏳ Remplissage…';
+  });
+  document.body.appendChild(b);
+})();
+"""
+
+
+def _set_button_label(page, text: str) -> None:
+    try:
+        page.evaluate(
+            "(t)=>{const b=document.getElementById('__ap_fill_btn'); if(b) b.textContent=t;}",
+            text)
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -549,46 +586,53 @@ def apply_to_offer(offer: dict, cv_path: str | None = None,
             log.exception("apply_to_offer a échoué : %s", exc)
             result = {"status": "error", "url": page.url if page else None,
                       "message": str(exc), "screenshot": None}
-        # Si connexion requise : attendre qu'Ali se connecte DANS la fenêtre,
-        # puis remplir automatiquement (il n'a pas à re-cliquer « Préparer »).
-        if not headless and result.get("status") == "needs_login":
-            try:
-                result = _wait_login_then_fill(page, offer, cv_path, keep_open_seconds)
-            except Exception as exc:
-                log.debug("attente connexion : %s", exc)
-
-        # Laisse la fenêtre ouverte ET continue de remplir au fil des étapes
-        # (formulaires multi-pages type Wizbii : profil -> parcours -> recherche).
-        # On ne touche jamais aux champs déjà remplis ; on saute connexion/CAPTCHA.
+        # Fenêtre ouverte + bouton « Compléter » : Ali navigue/se connecte
+        # librement, et REMPLIT AU CLIC du bouton (pas de remplissage auto en
+        # boucle). Gère plusieurs onglets (HelloWork -> site recruteur).
         if not headless and keep_open_seconds > 0:
-            waited = 0
+            waited = 0.0
             prof = _profile()
             smart_seen: set = set()  # signatures de pages déjà traitées par Groq
             while waited < keep_open_seconds:
                 try:
-                    time.sleep(5)
-                    waited += 5
-                    # Onglet actif = le PLUS RÉCENT non fermé du contexte : gère
-                    # le cas HelloWork -> redirection vers le site du recruteur
-                    # dans un NOUVEL onglet (on remplit les deux).
+                    time.sleep(1.5)
+                    waited += 1.5
                     opened = [pg for pg in ctx.pages if not pg.is_closed()]
                     if not opened:
                         break
                     cur = opened[-1]
                     try:
-                        cur.bring_to_front()
+                        cur.evaluate(_FILL_BUTTON_JS)  # (ré)injecte le bouton
+                    except Exception:
+                        continue
+                    # A-t-il cliqué « Compléter » depuis la dernière fois ? (par page)
+                    try:
+                        ts = cur.evaluate(
+                            "(window.__ap_fill_ts||0) > (window.__ap_fill_done||0)"
+                            " ? window.__ap_fill_ts : 0")
+                    except Exception:
+                        ts = 0
+                    if not ts:
+                        continue
+                    # Marque ce clic comme traité pour ne pas boucler.
+                    try:
+                        cur.evaluate("window.__ap_fill_done = window.__ap_fill_ts")
                     except Exception:
                         pass
-                    if _has_captcha(cur) or _looks_like_login(cur.url, cur):
+                    if _has_captcha(cur):
+                        _set_button_label(cur, "🧩 CAPTCHA : résous-le, puis reclique")
                         continue
-                    # Pas encore sur un formulaire -> tenter d'atteindre la
-                    # candidature (bouton Postuler), puis remplir.
+                    if _looks_like_login(cur.url, cur):
+                        _set_button_label(cur, "🔒 Connecte-toi, puis reclique")
+                        continue
                     if not _form_present(cur):
                         _trigger_apply(cur)
-                    _fill_known_fields(cur, prof)              # champs texte (gratuit)
-                    _smart_fill(cur, offer, prof, smart_seen)  # déroulants + lettre (Groq)
-                    if cv_path:
-                        _upload_cv(cur, cv_path)
+                    n = _fill_known_fields(cur, prof)
+                    n += _smart_fill(cur, offer, prof, smart_seen)
+                    up = bool(cv_path) and _upload_cv(cur, cv_path)
+                    _set_button_label(
+                        cur,
+                        f"✅ {n} champ(s) rempli(s){' + CV' if up else ''} — vérifie et envoie")
                 except Exception:
                     continue
         try:
