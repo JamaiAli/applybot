@@ -401,6 +401,11 @@ def run_scoring(limit: int = 0, rescore: bool = False, workers: int = 1,
         jobs = [dict(zip(columns, row)) for row in jobs]
 
     log.info("Scoring %d jobs (workers=%d)...", len(jobs), workers)
+    # Pause entre appels (séquentiel) pour rester sous la limite jetons/min de
+    # Groq (palier gratuit) et éviter de tomber sur Gemini (503). Réglable via
+    # SCORE_DELAY_SECONDS (0 = pas de pause).
+    import os as _os
+    _delay = float(_os.environ.get("SCORE_DELAY_SECONDS", "2.5"))
     t0 = time.time()
     completed = 0
     errors = 0
@@ -461,6 +466,8 @@ def run_scoring(limit: int = 0, rescore: bool = False, workers: int = 1,
             )
             if len(batch) >= batch_size:
                 batch = _flush_and_log(batch, completed)
+            if _delay > 0:
+                time.sleep(_delay)
 
     # Flush remaining
     if batch:
