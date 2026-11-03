@@ -139,11 +139,10 @@ def _default_profil(exp_data: dict, offer: dict) -> str:
     """Accroche de secours (si le LLM est indisponible) : bien rédigée, SANS
     parenthèse. Générique mais propre."""
     return ("Élève-ingénieur en cybersécurité à l'INSA Centre Val de Loire, je "
-            "recherche un stage de six mois à partir d'avril 2027 en intégration "
-            "IT et cybersécurité, autour d'Active Directory et d'Entra ID. J'ai "
-            "déployé, administré et audité des infrastructures Active Directory "
-            "de bout en bout, et j'attache autant d'importance à construire les "
-            "systèmes qu'à les sécuriser.")
+            "recherche un stage de six mois à partir d'avril 2027. J'aime "
+            "comprendre un système dans son ensemble, de son architecture à sa "
+            "sécurité, et je m'investis avec rigueur dans des projets concrets, "
+            "qu'ils touchent à l'administration, à l'audit ou à la cybersécurité.")
 
 
 def _llm_selection(offer: dict, exp_data: dict) -> dict | None:
@@ -163,23 +162,27 @@ def _llm_selection(offer: dict, exp_data: dict) -> dict | None:
     skills_cats = list(exp_data["skills"].keys())
     cand = exp_data["candidate"]
 
-    # Consigne « accroche » : bien rédigée, fluide, humaine (éviter le ton IA).
+    # Consigne « accroche » : bien rédigée, fluide, ALIGNÉE sur l'angle de l'offre.
     profil_rule = (
         "Rédige une accroche de CV en français, 2 ou 3 phrases BIEN CONSTRUITES "
-        "et FLUIDES — surtout PAS une liste de tâches du type « j'ai fait ci, "
-        "j'ai fait ça ». À la première personne, ton professionnel mais naturel, "
-        "comme un vrai étudiant. Structure : qui je suis et le stage que je "
-        "recherche, puis 1 ou 2 réalisations RÉELLES et concrètes en lien direct "
-        "avec cette offre, amenées de façon articulée (relie les idées avec des "
-        "connecteurs), et ce que je peux apporter. Temps cohérent, phrases "
-        "soignées. N'utilise JAMAIS les formules qui sonnent « IA » / CV bateau : "
-        "« Fort de », « Passionné par », « Doté d'une solide », « mettre à "
-        "profit », « évoluer au sein de », « environnement stimulant », "
-        "« environnement dynamique », « alliant ... et ... », « au carrefour "
-        "de », « je suis convaincu », « rigoureux et motivé », « dynamique et "
-        "motivé », ni les tirets cadratins. Varie la tournure d'une offre à "
-        "l'autre. Uniquement les faits fournis, aucun chiffre inventé, aucune "
-        "parenthèse."
+        "et FLUIDES (pas une liste de tâches), à la première personne, ton pro "
+        "mais naturel. LE PLUS IMPORTANT : ADAPTE-la à l'ANGLE PRÉCIS de CETTE "
+        "offre. Lis la description et identifie ce qu'elle demande vraiment "
+        "(gouvernance/GRC/audit/conformité/ISO/analyse de risques ; OU "
+        "intégration/Active Directory/Entra ID ; OU pentest/sécurité offensive ; "
+        "OU cloud/DevSecOps/réseau…), puis mets en avant MES expériences réelles "
+        "qui collent le mieux à CET angle — par exemple, pour un poste GRC/audit, "
+        "parle de mon audit et durcissement d'Active Directory, de mon analyse de "
+        "risques, de mes rapports et recommandations de conformité, et PAS du "
+        "déploiement d'infrastructure. Ne répète pas un objectif générique : "
+        "parle de CETTE offre. Structure : qui je suis et le stage visé, 1 ou 2 "
+        "réalisations concrètes alignées sur l'offre, ce que j'apporte. "
+        "N'utilise JAMAIS les formules IA / CV bateau : « Fort de », « Passionné "
+        "par », « Doté d'une solide », « mettre à profit », « évoluer au sein "
+        "de », « environnement stimulant/dynamique », « alliant ... et ... », "
+        "« au carrefour de », « je suis convaincu », « rigoureux et motivé », ni "
+        "les tirets cadratins. Uniquement des faits fournis, aucun chiffre "
+        "inventé, aucune parenthèse."
     )
 
     system = (
@@ -204,22 +207,24 @@ def _llm_selection(offer: dict, exp_data: dict) -> dict | None:
         "Renvoie un JSON avec EXACTEMENT ces clés :\n"
         '{\n'
         '  "profil": ' + json.dumps(profil_rule, ensure_ascii=False) + ',\n'
-        '  "selected_experience_ids": ["<3 à 4 ids les plus pertinents, ordonnés>"],\n'
+        '  "selected_experience_ids": ["<3 à 4 ids les plus pertinents POUR L\'ANGLE '
+        'de cette offre, ordonnés du plus pertinent au moins>"],\n'
         '  "skills_order": ["<catégories de compétences, pertinentes en premier>"]\n'
         "}"
     )
     try:
-        client = get_client()
+        client = get_client(quality=True)  # meilleur suivi des instructions
         raw = client.chat(
             [{"role": "system", "content": system},
              {"role": "user", "content": user}],
-            max_tokens=1200, temperature=0.4)
+            max_tokens=2000, temperature=0.4)
     except Exception as exc:
         log.warning("Appel LLM échoué : %s", exc)
         return None
 
     data = _extract_json(raw)
     if not data:
+        log.warning("Accroche LLM : réponse non-JSON (len=%d)", len(raw or ""))
         return None
 
     valid_ids = {e["id"] for e in exp_data["experiences"]}
