@@ -463,13 +463,19 @@ def generate_cv(offer: dict, out_name: str | None = None) -> Path:
     import time as _t
     selections = []
     llm_sel = None
-    for attempt in range(3):
-        llm_sel = _llm_selection(offer, exp_data)
-        if llm_sel:
-            break
-        if attempt < 2:
-            log.info("Accroche LLM indisponible, relance (%d/3)…", attempt + 2)
-            _t.sleep(3)
+    # Priorité LLM : met le scoring de fond en pause pendant la génération de
+    # l'accroche (tâche demandée en direct par l'utilisateur).
+    config.set_llm_priority(True)
+    try:
+        for attempt in range(3):
+            llm_sel = _llm_selection(offer, exp_data)
+            if llm_sel:
+                break
+            if attempt < 2:
+                log.info("Accroche LLM indisponible, relance (%d/3)…", attempt + 2)
+                _t.sleep(3)
+    finally:
+        config.set_llm_priority(False)
     if llm_sel:
         selections.append(llm_sel)
     selections.append(_default_selection(exp_data, offer))

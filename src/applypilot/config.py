@@ -3,10 +3,38 @@
 import os
 import platform
 import shutil
+import time
 from pathlib import Path
 
 # User data directory — all user-specific files live here
 APP_DIR = Path(os.environ.get("APPLYPILOT_DIR", Path.home() / ".applypilot"))
+
+# ── Priorité LLM ───────────────────────────────────────────────────────────
+# Verrou fichier : quand une tâche PRIORITAIRE utilise le LLM (ex. la génération
+# d'une accroche de CV demandée en direct), le scoring de fond se met en pause.
+# Auto-expiration (anti-blocage si la tâche plante sans libérer).
+_PRIORITY_LOCK = APP_DIR / "llm_priority.lock"
+_PRIORITY_TTL = 120  # secondes
+
+
+def set_llm_priority(on: bool) -> None:
+    try:
+        if on:
+            APP_DIR.mkdir(parents=True, exist_ok=True)
+            _PRIORITY_LOCK.write_text(str(time.time()), encoding="utf-8")
+        else:
+            _PRIORITY_LOCK.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def llm_priority_active() -> bool:
+    """True si une tâche prioritaire utilise le LLM (verrou récent)."""
+    try:
+        ts = float(_PRIORITY_LOCK.read_text(encoding="utf-8"))
+        return (time.time() - ts) < _PRIORITY_TTL
+    except (OSError, ValueError):
+        return False
 
 # Core paths
 DB_PATH = APP_DIR / "applypilot.db"

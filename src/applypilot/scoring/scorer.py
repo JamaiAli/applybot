@@ -452,7 +452,15 @@ def run_scoring(limit: int = 0, rescore: bool = False, workers: int = 1,
                 if len(batch) >= batch_size:
                     batch = _flush_and_log(batch, completed)
     else:
+        from applypilot import config as _cfg
         for job in jobs:
+            # Priorité LLM : si une tâche prioritaire (ex. accroche de CV demandée
+            # en direct) utilise le LLM, on met le scoring en pause le temps qu'il
+            # passe (auto-expiration du verrou -> jamais bloqué indéfiniment).
+            _waited_prio = 0
+            while _cfg.llm_priority_active() and _waited_prio < 130:
+                time.sleep(2)
+                _waited_prio += 2
             result = _score_one(job)
             completed += 1
             if result["score"] is None:
