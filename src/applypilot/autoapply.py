@@ -63,16 +63,36 @@ def _field_values(p: dict) -> list[tuple[re.Pattern, str]]:
 
 
 # ---------------------------------------------------------------------------
+_ACCOUNT_PROMPT = (
+    "créez votre compte", "creez votre compte", "créer un compte",
+    "creer un compte", "connectez-vous", "identifiez-vous",
+    "se connecter pour", "connexion pour postuler",
+)
+
+
 def _looks_like_login(url: str, page) -> bool:
     if _LOGIN_RE.search(url or ""):
         return True
     try:
-        # champ mot de passe présent et aucun champ fichier -> probablement login
         has_pw = page.locator("input[type='password']").count() > 0
         has_file = page.locator("input[type='file']").count() > 0
-        return has_pw and not has_file
+        if has_pw and not has_file:
+            return True
+        # Prompt « Créez votre compte / Connectez-vous » (ex. HelloWork avant
+        # connexion) sans formulaire de candidature -> connexion requise.
+        if not has_file:
+            txt = ""
+            try:
+                sec = page.locator("#postuler")
+                if sec.count() > 0:
+                    txt = (sec.first.inner_text(timeout=1500) or "").lower()
+            except Exception:
+                txt = ""
+            if any(k in txt for k in _ACCOUNT_PROMPT):
+                return True
     except Exception:
-        return False
+        pass
+    return False
 
 
 def _has_captcha(page) -> bool:
@@ -119,7 +139,8 @@ _APPLY_SELECTOR = (
     "a:has-text('Candidater'), button:has-text('Candidater'), "
     "a:has-text('Déposer'), button:has-text('Déposer'), "
     "button:has-text('candidature'), a:has-text('candidature'), "
-    "a:has-text('Apply'), button:has-text('Apply')"
+    "a:has-text('Apply'), button:has-text('Apply'), "
+    "[data-cy='applyButtonHeader'], [data-cy='applyButton']"  # HelloWork
 )
 
 
