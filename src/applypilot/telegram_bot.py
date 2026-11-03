@@ -179,7 +179,8 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/pause — mettre en pause la recherche quotidienne auto\n"
         "/resume — la réactiver\n"
         "/clean — nettoyer la discussion (messages < 48 h)\n"
-        "/job — jobs étudiants + intérim dispo (défaut : Bourges)\n\n"
+        "/job — jobs étudiants + intérim dispo (défaut : Bourges)\n"
+        "/done — marquer la dernière candidature préparée comme postulée\n\n"
         "Sur chaque offre : ✅ Valider · ✏️ Modifier · ❌ Ignorer.\n"
         "Je ne soumets jamais rien sans ton ✅.")
 
@@ -288,6 +289,25 @@ async def _send_job_list(bot, chat_id: int, titre: str, jobs: list[dict]) -> Non
                                reply_markup=kb, disable_web_page_preview=True)
 
 
+async def done_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Marque comme POSTULÉE la dernière offre pour laquelle tu as cliqué
+    « 📨 Préparer ma candidature »."""
+    if not _authorized(update):
+        return await _deny(update)
+    url = bot_core.get_last_prepared()
+    if not url:
+        await update.message.reply_text(
+            "Aucune candidature récente à marquer. Clique d'abord "
+            "« 📨 Préparer ma candidature » sur une offre.")
+        return
+    row = bot_core.fetch_one(url) or {}
+    bot_core.set_apply_status(url, "applied")
+    titre = (row.get("title") or "l'offre")[:80]
+    await update.message.reply_text(
+        f"✅ Marquée « postulée » : {titre}. Bravo 🎉 "
+        "Elle ne réapparaîtra plus dans /offres.")
+
+
 async def job_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Jobs étudiants + missions intérim actuellement dispo (défaut : Bourges).
     Usage : /job  ou  /job Orléans"""
@@ -371,6 +391,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 query.message.chat_id, f"⚠️ Échec de la génération du CV : {exc}")
         link = row.get("application_url") or row.get("url") or ""
         bot_core.set_apply_status(url, "prepared")
+        bot_core.set_last_prepared(url)  # pour /done
 
         # Ouvre le formulaire pré-rempli dans un navigateur VISIBLE sur le PC
         # (processus détaché : tu finis à la main — upload + clic Postuler).
@@ -463,6 +484,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("resume", resume_cmd))
     app.add_handler(CommandHandler("clean", clean_cmd))
     app.add_handler(CommandHandler("job", job_cmd))
+    app.add_handler(CommandHandler("done", done_cmd))
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     if app.job_queue is not None:

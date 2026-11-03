@@ -128,6 +128,24 @@ def set_apply_status(url: str, status: str, note: str | None = None) -> None:
             log.debug("transition_state ignorée pour %s : %s", url, exc)
 
 
+_LAST_PREPARED = config.APP_DIR / "last_prepared.txt"
+
+
+def set_last_prepared(url: str) -> None:
+    """Mémorise la dernière offre pour laquelle on a cliqué « Préparer »."""
+    try:
+        _LAST_PREPARED.write_text(url, encoding="utf-8")
+    except OSError as exc:
+        log.warning("Impossible d'écrire %s : %s", _LAST_PREPARED, exc)
+
+
+def get_last_prepared() -> str | None:
+    try:
+        return (_LAST_PREPARED.read_text(encoding="utf-8").strip() or None)
+    except OSError:
+        return None
+
+
 def set_cv_path(url: str, pdf_path: str) -> None:
     """Enregistre le CV généré comme CV adapté de l'offre."""
     conn = get_connection()
