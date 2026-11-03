@@ -159,6 +159,21 @@ def _llm_selection(offer: dict, exp_data: dict) -> dict | None:
     skills_cats = list(exp_data["skills"].keys())
     cand = exp_data["candidate"]
 
+    # Consigne « accroche humanisée » : éviter que le paragraphe sonne IA.
+    profil_rule = (
+        "Accroche de CV en français, 2 ou 3 phrases courtes, à la première "
+        "personne, écrite comme le ferait un vrai étudiant : naturelle, directe, "
+        "concrete et sincère. Ancre 1 ou 2 éléments REELS et précis en lien avec "
+        "CETTE offre, par exemple une techno ou un projet que j'ai fait. "
+        "N'utilise JAMAIS les formules qui sonnent « IA » ou « CV bateau » : "
+        "« Fort de », « Passionné par », « Doté d'une solide », « mettre à profit », "
+        "« évoluer au sein de », « environnement stimulant », « environnement "
+        "dynamique », « alliant ... et ... », « au carrefour de », « je suis "
+        "convaincu », « rigoureux et motivé », « dynamique et motivé », ni les "
+        "tirets cadratins. Varie la tournure d'une offre à l'autre. Uniquement "
+        "les faits fournis, aucun chiffre inventé, aucune parenthèse."
+    )
+
     system = (
         "Tu aides à ADAPTER un CV à une offre de stage, en français. "
         "RÈGLE ABSOLUE : tu ne sélectionnes et n'ordonnes que des éléments RÉELS "
@@ -174,11 +189,7 @@ def _llm_selection(offer: dict, exp_data: dict) -> dict | None:
         f"CATÉGORIES DE COMPÉTENCES : {skills_cats}\n\n"
         "Renvoie un JSON avec EXACTEMENT ces clés :\n"
         '{\n'
-        '  "profil": "2 à 3 phrases de synthèse, en français, style CV à ton '
-        "direct (ÉVITE les pronoms 'il/elle', commence par 'Élève-ingénieur...' "
-        "et enchaîne avec 'je recherche...'). UNIQUEMENT à partir de faits "
-        'ci-dessus (objectif, compétences, écoles). Aucune parenthèse '
-        "explicative. Aucun chiffre inventé.\",\n"
+        '  "profil": ' + json.dumps(profil_rule, ensure_ascii=False) + ',\n'
         '  "selected_experience_ids": ["<3 à 4 ids les plus pertinents, ordonnés>"],\n'
         '  "skills_order": ["<catégories de compétences, pertinentes en premier>"]\n'
         "}"
@@ -188,7 +199,7 @@ def _llm_selection(offer: dict, exp_data: dict) -> dict | None:
         raw = client.chat(
             [{"role": "system", "content": system},
              {"role": "user", "content": user}],
-            max_tokens=1200, temperature=0.2)
+            max_tokens=1200, temperature=0.5)
     except Exception as exc:
         log.warning("Appel LLM échoué : %s", exc)
         return None
