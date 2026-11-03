@@ -66,6 +66,9 @@ MIN_SCORE = bot_core.MIN_SCORE
 MAX_CARDS = bot_core.MAX_CARDS
 DAILY_HOUR = int(os.environ.get("BOT_DAILY_HOUR", "9"))
 
+# CV fixe pour les jobs étudiants / intérim (déposé par Ali).
+JOB_CV = config.APP_DIR / "cv_job_etudiant.pdf"
+
 
 # ---------------------------------------------------------------------------
 # Gate d'accès : seul le propriétaire peut parler au bot.
@@ -264,28 +267,25 @@ async def clean_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def _send_job_list(bot, chat_id: int, titre: str, jobs: list[dict]) -> None:
-    """Envoie une liste de jobs (jobs étudiants / intérim) en messages HTML."""
+    """Envoie chaque job (étudiant / intérim) en message séparé AVEC un bouton
+    « 🚀 Postuler » (pré-remplit le formulaire + CV job étudiant sur le PC)."""
     if not jobs:
         await bot.send_message(chat_id, f"{titre} : aucune offre trouvée.")
         return
-    header = f"<b>{html.escape(titre)}</b> — {len(jobs)} offre(s)\n\n"
-    lines, chunks, cur = [], [], header
+    await bot.send_message(chat_id, f"<b>{html.escape(titre)}</b> — {len(jobs)} offre(s)",
+                           parse_mode=ParseMode.HTML)
     for j in jobs:
+        h = bot_core.remember(j["url"])
         t = html.escape((j.get("title") or "")[:90])
         comp = html.escape((j.get("employer_name") or "")[:40])
         loc = html.escape((j.get("location") or "")[:40])
-        url = j.get("url") or ""
-        entry = (f"• <b>{t}</b>\n  {comp}" + (f" · {loc}" if loc else "")
-                 + f"\n  <a href=\"{html.escape(url)}\">Voir l'offre</a>\n\n")
-        if len(cur) + len(entry) > 3800:
-            chunks.append(cur)
-            cur = ""
-        cur += entry
-    if cur.strip():
-        chunks.append(cur)
-    for ch in chunks:
-        await bot.send_message(chat_id, ch, parse_mode=ParseMode.HTML,
-                               disable_web_page_preview=True)
+        txt = f"<b>{t}</b>\n{comp}" + (f" · {loc}" if loc else "")
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🚀 Postuler", callback_data=f"jobapply:{h}"),
+            InlineKeyboardButton("Voir l'offre", url=j["url"]),
+        ]])
+        await bot.send_message(chat_id, txt, parse_mode=ParseMode.HTML,
+                               reply_markup=kb, disable_web_page_preview=True)
 
 
 async def job_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -298,8 +298,8 @@ async def job_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await context.bot.send_message(
         chat_id, f"🔎 Recherche jobs étudiants + missions intérim à {html.escape(ville)}…")
     from applypilot.discovery import hellowork
-    etu = await asyncio.to_thread(hellowork.search_live, "job étudiant", ville, "", 1, 12)
-    inter = await asyncio.to_thread(hellowork.search_live, "", ville, "Travail_temp", 1, 12)
+    etu = await asyncio.to_thread(hellowork.search_live, "job étudiant", ville, "", 1, 10)
+    inter = await asyncio.to_thread(hellowork.search_live, "", ville, "Travail_temp", 1, 10)
     await _send_job_list(context.bot, chat_id, f"🎓 Jobs étudiants — {ville}", etu)
     await _send_job_list(context.bot, chat_id, f"🛠️ Missions intérim — {ville}", inter)
 
@@ -321,6 +321,33 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     url = bot_core.resolve(h)
     if not url:
         return await query.answer("Offre introuvable (redémarrage ?).", show_alert=True)
+
+    if action == "jobapply":
+        # Job étudiant / intérim : ouvre l'offre + pré-remplit avec le CV fixe.
+        await query.answer("Ouverture…")
+        if not JOB_CV.exists():
+            await context.bot.send_message(
+                query.message.chat_id,
+                "⚠️ CV job étudiant introuvable (cv_job_etudiant.pdf). "
+                "Renvoie-le-moi et je le remets en place.")
+            return
+        try:
+            cmd = [sys.executable, "-m", "applypilot.autoapply",
+                   "--url", url, "--cv", str(JOB_CV)]
+            subprocess.Popen(cmd, cwd=os.getcwd(),
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            await context.bot.send_message(
+                query.message.chat_id,
+                "🖥️ J'ouvre l'offre dans un navigateur sur ton PC et je pré-remplis "
+                "le formulaire avec ton <b>CV job étudiant</b>. Là-bas : vérifie, "
+                "téléverse le CV s'il manque, et clique <b>Postuler/Envoyer</b>. "
+                "Connexion/CAPTCHA éventuels = à toi.",
+                parse_mode=ParseMode.HTML)
+        except Exception as exc:
+            log.exception("jobapply échoué : %s", exc)
+            await context.bot.send_message(
+                query.message.chat_id, f"⚠️ Échec de l'ouverture : {exc}")
+        return
 
     if action == "prep":
         await query.answer("Préparation…")

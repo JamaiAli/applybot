@@ -572,15 +572,25 @@ def main() -> None:
     args = ap.parse_args()
 
     offer = _load_offer(args.url, args.rank)
+    if not offer and args.url:
+        # Offre hors base (ex. job étudiant / intérim via /job) : offre minimale.
+        offer = {"url": args.url, "application_url": args.url, "title": ""}
     if not offer:
         raise SystemExit("Offre introuvable (vérifie --url ou --rank).")
 
     cv = args.cv or offer.get("tailored_resume_path")
-    if not cv or not Path(cv).exists():
-        from applypilot import cv_latex
-        log.info("Génération du CV adapté…")
-        cv = str(cv_latex.generate_cv(offer))
-    log.info("Offre : %s", (offer.get("title") or "")[:60])
+    if cv and not Path(cv).exists():
+        cv = None
+    if not cv:
+        # Pas de CV fourni : on génère un CV adapté SEULEMENT pour une offre du
+        # pipeline (qui a un titre). Sinon (--cv manquant), on refuse.
+        if offer.get("title"):
+            from applypilot import cv_latex
+            log.info("Génération du CV adapté…")
+            cv = str(cv_latex.generate_cv(offer))
+        else:
+            raise SystemExit("Aucun CV : passe --cv <chemin.pdf>.")
+    log.info("Offre : %s", (offer.get("title") or args.url or "")[:60])
     log.info("CV    : %s", cv)
 
     res = apply_to_offer(offer, cv_path=cv, headless=args.headless)
