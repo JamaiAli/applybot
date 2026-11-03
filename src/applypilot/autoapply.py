@@ -42,6 +42,15 @@ def _profile() -> dict:
     return json.loads((config.APP_DIR / "profile.json").read_text(encoding="utf-8"))
 
 
+def _qa_knowledge() -> dict:
+    """Réponses d'Ali aux questions de formulaire (permis, mobilité, dispo…)."""
+    try:
+        d = json.loads((config.APP_DIR / "qa_knowledge.json").read_text(encoding="utf-8"))
+        return {k: v for k, v in d.items() if not k.startswith("_")}
+    except Exception:
+        return {}
+
+
 def _field_values(p: dict) -> list[tuple[re.Pattern, str]]:
     """Table (motif de champ -> valeur) à partir de profile.json."""
     pers = p.get("personal", {})
@@ -270,6 +279,19 @@ _JS_SMART_FIELDS = r"""
     if ((el.value||'').trim()) return;
     out.push({kind:'textarea', nth: tas.indexOf(el), label: labelOf(el), options: []});
   });
+  // Groupes de boutons radio (ex. « Permis de conduire ? » Oui / Non)
+  const names = new Set();
+  document.querySelectorAll('input[type=radio]').forEach(e => { if (e.name) names.add(e.name); });
+  names.forEach(name => {
+    const els = [...document.querySelectorAll('input[type=radio][name="' + CSS.escape(name) + '"]')];
+    const vis = els.filter(e => { const r = e.getBoundingClientRect(); return r.width && r.height; });
+    if (!vis.length || els.some(e => e.checked)) return;  // vide seulement
+    // question = texte au-dessus du groupe ; options = libellé de chaque radio
+    let q = labelOf(vis[0]);
+    const values = vis.map(e => e.value);
+    const labels = vis.map(e => labelOf(e) || e.value);
+    out.push({kind:'radio', name:name, label:q, options:labels, values:values});
+  });
   return out;
 }
 """
@@ -309,17 +331,19 @@ def _smart_fill(page, offer: dict, p: dict, seen: set) -> int:
     import json as _json
     cat = [{"i": i, "type": f["kind"], "libelle": f["label"], "options": f["options"]}
            for i, f in enumerate(fields)]
+    qa = _qa_knowledge()
     system = (
-        "Tu remplis un formulaire de candidature de stage, en français. "
+        "Tu remplis un formulaire de candidature, en français. "
         "RÈGLE ABSOLUE : n'invente aucune compétence, expérience ni chiffre ; "
-        "utilise uniquement le profil fourni. Pour un 'select', 'valeur' DOIT "
-        "être EXACTEMENT l'une des options proposées (ou \"\" si rien ne "
-        "convient). Pour un 'textarea' de motivation, rédige 2 à 4 phrases "
-        "sincères (sans parenthèses, sans formule bateau). Réponds UNIQUEMENT "
-        "en JSON : {\"remplir\": [{\"i\": <int>, \"valeur\": \"...\"}]}"
+        "utilise uniquement le PROFIL et les INFOS fournis. Pour 'select' ou "
+        "'radio', 'valeur' DOIT être EXACTEMENT l'une des options proposées (ou "
+        "\"\" si rien ne convient). Pour un 'textarea' de motivation, rédige 2 à "
+        "4 phrases sincères (sans parenthèses, sans formule bateau). Réponds "
+        "UNIQUEMENT en JSON : {\"remplir\": [{\"i\": <int>, \"valeur\": \"...\"}]}"
     )
     user = (
         f"PROFIL: {_candidate_brief(p)}\n"
+        f"INFOS (réponses du candidat) : {_json.dumps(qa, ensure_ascii=False)}\n"
         f"OFFRE: {offer.get('title')} — {offer.get('company') or offer.get('site')}\n"
         f"CHAMPS: {_json.dumps(cat, ensure_ascii=False)}"
     )
@@ -367,6 +391,24 @@ def _smart_fill(page, offer: dict, p: dict, seen: set) -> int:
                 if not (ta.input_value() or "").strip():
                     ta.fill(val, timeout=3000)
                     done += 1
+            elif f["kind"] == "radio":
+                # Trouve l'option (libellé) choisie -> clique le radio correspondant.
+                labels = f.get("options", [])
+                values = f.get("values", [])
+                idx = None
+                for k, lab in enumerate(labels):
+                    if val.lower() == lab.lower() or val.lower() in lab.lower() \
+                            or lab.lower() in val.lower():
+                        idx = k
+                        break
+                if idx is not None and idx < len(values):
+                    try:
+                        page.locator(
+                            f"input[type=radio][name=\"{f['name']}\"]"
+                            f"[value=\"{values[idx]}\"]").first.check(timeout=3000)
+                        done += 1
+                    except Exception:
+                        pass
         except Exception:
             continue
     return done
