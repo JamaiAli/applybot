@@ -136,10 +136,14 @@ def _default_selection(exp_data: dict, offer: dict) -> dict:
 
 
 def _default_profil(exp_data: dict, offer: dict) -> str:
-    cand = exp_data["candidate"]
-    return (cand.get("objective") or
-            "Élève-ingénieur en cybersécurité recherchant un stage de 6 mois "
-            "à partir d'avril 2027.")
+    """Accroche de secours (si le LLM est indisponible) : bien rédigée, SANS
+    parenthèse. Générique mais propre."""
+    return ("Élève-ingénieur en cybersécurité à l'INSA Centre Val de Loire, je "
+            "recherche un stage de six mois à partir d'avril 2027 en intégration "
+            "IT et cybersécurité, autour d'Active Directory et d'Entra ID. J'ai "
+            "déployé, administré et audité des infrastructures Active Directory "
+            "de bout en bout, et j'attache autant d'importance à construire les "
+            "systèmes qu'à les sécuriser.")
 
 
 def _llm_selection(offer: dict, exp_data: dict) -> dict | None:
