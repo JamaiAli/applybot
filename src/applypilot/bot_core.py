@@ -128,6 +128,27 @@ def set_apply_status(url: str, status: str, note: str | None = None) -> None:
             log.debug("transition_state ignorée pour %s : %s", url, exc)
 
 
+_NOTIFIED_PATH = config.APP_DIR / "notified_offers.json"
+
+
+def load_notified() -> set[str]:
+    try:
+        return set(json.loads(_NOTIFIED_PATH.read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        return set()
+
+
+def mark_notified(urls: list[str]) -> None:
+    """Mémorise les offres déjà envoyées automatiquement (anti-spam)."""
+    s = load_notified()
+    s.update(urls)
+    try:
+        _NOTIFIED_PATH.write_text(json.dumps(sorted(s), ensure_ascii=False),
+                                  encoding="utf-8")
+    except OSError as exc:
+        log.warning("Impossible d'écrire %s : %s", _NOTIFIED_PATH, exc)
+
+
 _LAST_PREPARED = config.APP_DIR / "last_prepared.txt"
 
 

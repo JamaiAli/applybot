@@ -65,6 +65,8 @@ except ValueError:
 MIN_SCORE = bot_core.MIN_SCORE
 MAX_CARDS = bot_core.MAX_CARDS
 DAILY_HOUR = int(os.environ.get("BOT_DAILY_HOUR", "9"))
+# Intervalle de la veille automatique (minutes). Défaut 10.
+CYCLE_MINUTES = int(os.environ.get("BOT_CYCLE_MINUTES", "10"))
 
 # CV fixe pour les jobs étudiants / intérim (déposé par Ali).
 JOB_CV = config.APP_DIR / "cv_job_etudiant.pdf"
@@ -176,7 +178,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/search — chercher + scorer, puis présenter les meilleures offres\n"
         "/offres — afficher les offres à valider (sans relancer la recherche)\n"
         "/status — état du pipeline\n"
-        "/pause — mettre en pause la recherche quotidienne auto\n"
+        "/pause — mettre en pause la veille auto (toutes les 10 min)\n"
         "/resume — la réactiver\n"
         "/clean — nettoyer la discussion (messages < 48 h)\n"
         "/job — jobs étudiants + intérim dispo (défaut : Bourges)\n"
@@ -461,15 +463,35 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Recherche quotidienne auto
+# Veille automatique (toutes les N minutes) : HelloWork -> score -> NOUVELLES
+# offres seulement (sans re-spammer celles déjà envoyées).
 # ---------------------------------------------------------------------------
-async def _daily_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+async def _auto_cycle(context: ContextTypes.DEFAULT_TYPE) -> None:
     if not context.application.bot_data.get("auto_search", True):
         return
+    if context.application.bot_data.get("_cycle_busy"):
+        return  # un cycle précédent tourne encore
+    context.application.bot_data["_cycle_busy"] = True
     try:
-        await _run_search_and_post(context.bot, OWNER_ID, limit=MAX_CARDS)
-    except Exception as exc:
-        log.exception("Recherche quotidienne échouée : %s", exc)
+        from applypilot import pipeline
+        try:
+            await asyncio.to_thread(pipeline._run_discover, 1, ["hellowork"])
+            await asyncio.to_thread(pipeline._run_score)
+        except Exception as exc:
+            log.exception("Veille auto (discover/score) : %s", exc)
+            return
+        offers = await asyncio.to_thread(bot_core.fetch_pending_offers, MIN_SCORE, 50)
+        notified = await asyncio.to_thread(bot_core.load_notified)
+        new = [o for o in offers if o["url"] not in notified][:5]
+        if not new:
+            return
+        await context.bot.send_message(
+            OWNER_ID, f"🆕 {len(new)} nouvelle(s) offre(s) ≥ {MIN_SCORE}/10 détectée(s) :")
+        for row in new:
+            await _send_offer(context.bot, OWNER_ID, row)
+        await asyncio.to_thread(bot_core.mark_notified, [o["url"] for o in new])
+    finally:
+        context.application.bot_data["_cycle_busy"] = False
 
 
 # ---------------------------------------------------------------------------
@@ -488,7 +510,10 @@ def build_application() -> Application:
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     if app.job_queue is not None:
-        app.job_queue.run_daily(_daily_job, time=_dt.time(hour=DAILY_HOUR))
+        # Veille automatique toutes les N minutes (défaut 10) : scrape HelloWork,
+        # score, et envoie les nouvelles bonnes offres.
+        app.job_queue.run_repeating(_auto_cycle, interval=CYCLE_MINUTES * 60,
+                                    first=30)
     return app
 
 
