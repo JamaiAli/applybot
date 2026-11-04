@@ -329,7 +329,8 @@ def _smart_fill(page, offer: dict, p: dict, seen: set) -> int:
     sig = "|".join(f"{f['kind']}:{f['label']}" for f in fields)
     if sig in seen:
         return 0
-    seen.add(sig)
+    # NB : on ne marque `seen` qu'en cas de SUCCÈS (plus bas), pour réessayer au
+    # reclic si Groq échoue (quota) ou ne remplit rien.
 
     import json as _json
     cat = [{"i": i, "type": f["kind"], "libelle": f["label"], "options": f["options"]}
@@ -414,27 +415,40 @@ def _smart_fill(page, offer: dict, p: dict, seen: set) -> int:
                         pass
         except Exception:
             continue
+    if done > 0:
+        seen.add(sig)  # succès -> ne pas retraiter cette page
     return done
 
 
 def _upload_cv(page, cv_path: str) -> bool:
-    """Joint le CV au PREMIER champ fichier, UNE SEULE FOIS (idempotent) : si un
-    fichier y est déjà, on ne retéléverse pas (sinon « Vous ne pouvez plus
-    télécharger de fichiers »). On ne touche pas aux champs « fichiers
-    supplémentaires »."""
+    """Joint le CV au 1er champ fichier VIDE qui l'accepte. Essaie TOUS les
+    champs fichier (certains ATS, type SuccessFactors, cachent l'input derrière
+    un widget « + »). Idempotent : si un fichier y est déjà, on ne retéléverse
+    pas. S'arrête au premier upload réussi (pour ne pas joindre le CV au champ
+    « lettre de motivation » / « fichiers supplémentaires »)."""
     try:
         files = page.locator("input[type='file']")
-        if files.count() == 0:
+        n = files.count()
+        if n == 0:
             return False
-        first = files.first
-        try:
-            already = first.evaluate("e => (e.files && e.files.length) ? e.files.length : 0")
-        except Exception:
-            already = 0
-        if already and already > 0:
-            return True  # CV déjà joint — ne rien faire
-        first.set_input_files(cv_path, timeout=5000)
-        return True
+        any_already = False
+        for i in range(min(n, 6)):
+            el = files.nth(i)
+            try:
+                already = el.evaluate(
+                    "e => (e.files && e.files.length) ? e.files.length : 0")
+            except Exception:
+                already = 0
+            if already and already > 0:
+                any_already = True
+                continue  # déjà un fichier sur ce champ
+            try:
+                # force=True : certains inputs fichier sont cachés derrière un widget.
+                el.set_input_files(cv_path, timeout=4000)
+                return True
+            except Exception:
+                continue
+        return any_already  # True si un fichier était déjà joint quelque part
     except Exception as exc:
         log.debug("Upload CV échoué : %s", exc)
         return False
