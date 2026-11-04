@@ -155,13 +155,13 @@ class TestBuildFallbackChain(unittest.TestCase):
 
     def test_raises_without_api_keys(self):
         """RuntimeError is raised when no API keys are configured."""
-        env_without_keys = {
-            k: v for k, v in __import__("os").environ.items()
-            if k not in ("GEMINI_API_KEY", "OPENAI_API_KEY",
-                         "ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY", "LLM_URL")
-        }
-        with patch.dict("os.environ", env_without_keys, clear=True):
-            from applypilot.llm import _build_fallback_chain
+        # Hermétique : on vide TOUT l'environnement. L'ancienne version ne
+        # retirait pas GROQ_API_KEY (ni d'autres), donc une clé réellement
+        # présente dans ~/.applypilot/.env (GROQ_API_KEY, GEMINI_API_KEY…)
+        # faisait croire qu'un provider était configuré et le test échouait.
+        # _build_fallback_chain lit groq/gemini/openai/deepseek/anthropic.
+        from applypilot.llm import _build_fallback_chain
+        with patch.dict("os.environ", {}, clear=True):
             with self.assertRaises(RuntimeError):
                 _build_fallback_chain("gemini-2.5-flash", quality=False)
 
