@@ -80,23 +80,16 @@ _ACCOUNT_PROMPT = (
 
 
 def _looks_like_login(url: str, page) -> bool:
+    """Connexion requise UNIQUEMENT sur un vrai signal : URL de login, ou message
+    explicite « Connectez-vous / Créez un compte » dans la zone de candidature.
+    Un simple champ mot de passe NE compte PAS (ex. création de compte à la volée
+    sur un formulaire de candidature type SAP SuccessFactors)."""
     if _LOGIN_RE.search(url or ""):
         return True
     try:
-        has_pw = page.locator("input[type='password']").count() > 0
-        has_file = page.locator("input[type='file']").count() > 0
-        if has_pw and not has_file:
-            return True
-        # Prompt « Créez votre compte / Connectez-vous » (ex. HelloWork avant
-        # connexion) sans formulaire de candidature -> connexion requise.
-        if not has_file:
-            txt = ""
-            try:
-                sec = page.locator("#postuler")
-                if sec.count() > 0:
-                    txt = (sec.first.inner_text(timeout=1500) or "").lower()
-            except Exception:
-                txt = ""
+        sec = page.locator("#postuler")
+        if sec.count() > 0:
+            txt = (sec.first.inner_text(timeout=1500) or "").lower()
             if any(k in txt for k in _ACCOUNT_PROMPT):
                 return True
     except Exception:
