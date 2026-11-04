@@ -38,17 +38,31 @@ def _get_or_create_extension_key() -> str:
     if key_path.exists():
         return key_path.read_text(encoding="utf-8").strip()
 
-    # Generate a new RSA-2048 key pair via openssl. We only persist the
-    # PUBLIC key in DER + base64 (Chrome's manifest.json `key` format).
-    privkey_der = _sp.check_output(
-        ["openssl", "genpkey", "-algorithm", "RSA",
-         "-pkeyopt", "rsa_keygen_bits:2048", "-outform", "DER"],
-        stderr=_sp.DEVNULL,
-    )
-    pubkey_der = _sp.check_output(
-        ["openssl", "rsa", "-pubout", "-inform", "DER", "-outform", "DER"],
-        input=privkey_der, stderr=_sp.DEVNULL,
-    )
+    # On ne persiste que la clé PUBLIQUE en base64(SubjectPublicKeyInfo DER) —
+    # format attendu par le champ `key` de manifest.json.
+    # Primaire : `cryptography` (pur Python, robuste, pas besoin d'openssl dans
+    # le PATH). Repli : openssl en PEM — le DER binaire passé via stdin est
+    # corrompu sur Windows/mingw (« Could not find private key »), ce qui
+    # faisait planter _get_or_create_extension_key et, en cascade, toute la
+    # configuration du profil Chrome dans _suppress_restore_nag.
+    try:
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        _key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        pubkey_der = _key.public_key().public_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+    except Exception:
+        privkey_pem = _sp.check_output(
+            ["openssl", "genpkey", "-algorithm", "RSA",
+             "-pkeyopt", "rsa_keygen_bits:2048"],
+            stderr=_sp.DEVNULL,
+        )
+        pubkey_der = _sp.check_output(
+            ["openssl", "pkey", "-pubout", "-outform", "DER"],
+            input=privkey_pem, stderr=_sp.DEVNULL,
+        )
     pubkey_b64 = base64.b64encode(pubkey_der).decode("ascii")
     key_path.parent.mkdir(parents=True, exist_ok=True)
     key_path.write_text(pubkey_b64, encoding="utf-8")
