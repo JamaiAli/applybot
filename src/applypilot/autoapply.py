@@ -420,6 +420,58 @@ def _smart_fill(page, offer: dict, p: dict, seen: set) -> int:
     return done
 
 
+# Réponses déterministes pour les menus déroulants courants (sans LLM, fiable).
+# Ordre important : les règles plus spécifiques (ex. « autorisé à travailler »)
+# AVANT les plus générales (ex. « pays ») — une question « autorisé à travailler
+# pour le pays » doit donner « Oui », pas « France ».
+_SELECT_ANSWERS = [
+    (re.compile(r"autoris|work.?permit|droit de travailler|[ée]ligib", re.I), "Oui"),
+    (re.compile(r"d[ée]j[àa].*(salari|employ|travaill)|former.?employee|ancien.*salari", re.I), "Non"),
+    (re.compile(r"permis de conduire|driving licen", re.I), "Oui"),
+    (re.compile(r"comment.*(connu|connaissance|entendu)|source de|how did you hear|r[ée]f[ée]renc", re.I), "LinkedIn"),
+    (re.compile(r"niveau.*(diplom|[ée]tud)|dernier dipl|level of (study|education)", re.I), "Bac+4"),
+    (re.compile(r"type de contrat|contract type", re.I), "Stage"),
+    (re.compile(r"pays|country|r[ée]sidence|nationalit", re.I), "France"),
+]
+
+
+def _fill_selects(page) -> int:
+    """Remplit les <select> courants de façon déterministe (France, Oui/Non,
+    LinkedIn…), sans dépendre de Groq. On NE touche PAS aux champs de consentement
+    (handicap, RGPD…) : ce choix reste à l'utilisateur."""
+    try:
+        metas = page.evaluate(_JS_SMART_FIELDS)
+    except Exception:
+        return 0
+    selects = page.locator("select")
+    done = 0
+    for m in metas:
+        if m.get("kind") != "select":
+            continue
+        label = (m.get("label") or "").lower()
+        if any(w in label for w in ("consent", "handicap", "rgpd", "donn")):
+            continue  # consentement -> à l'utilisateur
+        options = m.get("options", [])
+        for pat, ans in _SELECT_ANSWERS:
+            if not pat.search(label):
+                continue
+            # option dont le texte correspond à la réponse
+            chosen = None
+            for opt in options:
+                lo = opt.lower()
+                if ans.lower() == lo or ans.lower() in lo or (lo and lo in ans.lower()):
+                    chosen = opt
+                    break
+            if chosen:
+                try:
+                    selects.nth(m["nth"]).select_option(label=chosen, timeout=3000)
+                    done += 1
+                except Exception:
+                    pass
+            break
+    return done
+
+
 def _upload_cv(page, cv_path: str) -> bool:
     """Joint le CV au 1er champ fichier VIDE qui l'accepte. Essaie TOUS les
     champs fichier (certains ATS, type SuccessFactors, cachent l'input derrière
@@ -644,8 +696,9 @@ def apply_to_offer(offer: dict, cv_path: str | None = None,
                         continue
                     if not _form_present(cur):
                         _trigger_apply(cur)
-                    n = _fill_known_fields(cur, prof)
-                    n += _smart_fill(cur, offer, prof, smart_seen)
+                    n = _fill_known_fields(cur, prof)        # champs texte
+                    n += _fill_selects(cur)                  # déroulants courants (sans LLM)
+                    n += _smart_fill(cur, offer, prof, smart_seen)  # reste via Groq
                     up = bool(cv_path) and _upload_cv(cur, cv_path)
                     _set_button_label(
                         cur,
