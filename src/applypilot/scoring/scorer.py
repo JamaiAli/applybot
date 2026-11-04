@@ -405,7 +405,7 @@ def run_scoring(limit: int = 0, rescore: bool = False, workers: int = 1,
     # Groq (palier gratuit) et éviter de tomber sur Gemini (503). Réglable via
     # SCORE_DELAY_SECONDS (0 = pas de pause).
     import os as _os
-    _delay = float(_os.environ.get("SCORE_DELAY_SECONDS", "2.5"))
+    _delay = float(_os.environ.get("SCORE_DELAY_SECONDS", "4"))
     t0 = time.time()
     completed = 0
     errors = 0
