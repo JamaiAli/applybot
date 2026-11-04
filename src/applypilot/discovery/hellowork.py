@@ -143,7 +143,7 @@ def _fetch_detail(client: httpx.Client, url: str) -> dict:
 
 def _fetch(client: httpx.Client, query: str, contract: str, page: int,
            location: str = "") -> str:
-    params = {}
+    params = {"st": "date"}  # tri par DATE (offres les plus récentes d'abord)
     if query:
         params["k"] = query
     if contract:
