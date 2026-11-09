@@ -198,7 +198,9 @@ def format_hit_notification(tracker: dict) -> str:
     }.get(link_type, ("🔗", link_type.capitalize()))
     icon, type_label = type_meta
 
-    now_fr = datetime.datetime.now().strftime("%d/%m/%Y à %H:%M:%S")
+    import zoneinfo
+    paris_tz = zoneinfo.ZoneInfo("Europe/Paris")
+    now_fr = datetime.datetime.now(paris_tz).strftime("%d/%m/%Y à %H:%M:%S")
 
     lines = [
         f"🔔 <b>Consultation de ton {type_label} détectée !</b>",

@@ -101,15 +101,18 @@ async def _deny(update: Update) -> None:
 # ---------------------------------------------------------------------------
 def _format_posted(posted_at: str | None) -> str | None:
     """Date de publication en français : « aujourd'hui », « hier »,
-    « il y a N jours (JJ/MM) »."""
+    « il y a N jours (JJ/MM) » convertie au fuseau Europe/Paris."""
     if not posted_at:
         return None
     try:
+        import zoneinfo
+        paris_tz = zoneinfo.ZoneInfo("Europe/Paris")
         s = posted_at.replace("Z", "+00:00")
         d = _dt.datetime.fromisoformat(s)
         if d.tzinfo is None:
             d = d.replace(tzinfo=_dt.timezone.utc)
-        now = _dt.datetime.now(_dt.timezone.utc)
+        d = d.astimezone(paris_tz)
+        now = _dt.datetime.now(paris_tz)
         days = (now.date() - d.date()).days
         date_str = d.strftime("%d/%m/%Y")
         if days <= 0:
@@ -686,7 +689,7 @@ async def trackers_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             if cnt > 0:
                 dev = html.escape(parse_user_agent(t.get("user_agent")))
                 dt = t.get("last_opened_at") or t.get("opened_at") or ""
-                dt_str = dt[:16].replace("T", " ") if dt else ""
+                dt_str = _format_date_fr(dt) if dt else ""
                 lines.append(
                     f"🟢 <b>{comp}</b> — {tit} [{badge}]\n"
                     f"   ↳ <b>{cnt} clic(s)</b> (Dernier : {dt_str} via {dev})"
@@ -877,21 +880,38 @@ async def track_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 def _format_date_fr(raw: str | None) -> str:
-    """Formate une date RFC 2822 ou ISO en format lisible en français."""
+    """Formate une date RFC 2822 ou ISO en format lisible en français converti au fuseau Europe/Paris."""
     if not raw:
         return "Date inconnue"
     import email.utils
+    import zoneinfo
+    from datetime import datetime, timezone
+
+    paris_tz = zoneinfo.ZoneInfo("Europe/Paris")
+    dt = None
+
     try:
         dt = email.utils.parsedate_to_datetime(raw)
-        return dt.strftime("%d/%m/%Y à %H:%M")
     except Exception:
         pass
-    try:
-        from datetime import datetime
-        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-        return dt.strftime("%d/%m/%Y à %H:%M")
-    except Exception:
+
+    if dt is None:
+        try:
+            clean_raw = str(raw).replace("Z", "+00:00")
+            dt = datetime.fromisoformat(clean_raw)
+        except Exception:
+            pass
+
+    if dt is None:
         return str(raw)[:16]
+
+    if dt.tzinfo is None:
+        # Sans fuseau explicite, on assume UTC pour être cohérent avec le stockage DB
+        dt = dt.replace(tzinfo=timezone.utc)
+
+    # Conversion systématique dans le fuseau horaire français
+    dt_paris = dt.astimezone(paris_tz)
+    return dt_paris.strftime("%d/%m/%Y à %H:%M")
 
 
 async def _send_classified_report(
