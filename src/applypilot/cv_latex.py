@@ -673,6 +673,54 @@ def _compile(tex_path: Path) -> Path:
     return pdf_path
 
 
+def build_cv_filename(offer: dict, candidate_name: str | None = None) -> str:
+    """Génère un nom de fichier propre au nom de l'offre (titre + entreprise),
+    conforme aux standards ATS et exempt de caractères interdits sous Windows.
+    Exemple: CV_Ali_Jamai_Vinci_Energies_Stage_Auditeur_Cybersecurite.pdf
+    """
+    import unicodedata
+
+    raw_title = str(offer.get("title") or "Stage Cybersécurité").strip()
+    raw_comp = str(offer.get("company") or "").strip()
+    if not raw_comp or raw_comp.lower() in ("indeed", "hellowork", "inconnu", "unknown", "confidentiel", "entreprise", "none"):
+        site = str(offer.get("site") or "").strip()
+        if site and site.lower() not in ("indeed", "hellowork", "inconnu", "unknown", "site"):
+            raw_comp = site
+        else:
+            raw_comp = ""
+
+    def clean(s: str) -> str:
+        # Supprime les mentions légales de genre (H/F, F/H, etc.)
+        s = re.sub(r"\b[HhFfMmXx]\s*[/|\\-]\s*[HhFfMmXx](?:\s*[/|\\-]\s*[HhFfMmXx])?\b", "", s)
+        s = re.sub(r"\([HhFfMmXx\s/|\\-]+\)", "", s)
+        # Supprime les identifiants ou numéros d'offre entre parenthèses
+        s = re.sub(r"[\(\[\{][A-Za-z0-9_\-\s:]{3,}[\)\]\}]", "", s)
+        # Normalise les accents ASCII
+        s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
+        # Remplace la ponctuation par des underscores
+        s = re.sub(r"[^A-Za-z0-9]+", "_", s)
+        return s.strip("_")
+
+    comp_slug = clean(raw_comp)
+    title_slug = clean(raw_title)
+
+    if not candidate_name:
+        candidate_name = "Ali Jamai"
+    cand_slug = clean(candidate_name)
+
+    # Tronque à 7 mots significatifs max pour éviter les chemins trop longs
+    title_words = [w for w in title_slug.split("_") if w]
+    title_short = "_".join(title_words[:7])
+
+    parts = ["CV", cand_slug]
+    if comp_slug and comp_slug.lower() not in title_short.lower():
+        parts.append(comp_slug)
+    if title_short:
+        parts.append(title_short)
+
+    return "_".join(p for p in parts if p) or "CV_Ali_Jamai"
+
+
 def generate_cv(offer: dict, out_name: str | None = None) -> Path:
     """Génère et compile un CV adapté à l'offre. Renvoie le chemin du PDF.
 
@@ -707,14 +755,21 @@ def generate_cv(offer: dict, out_name: str | None = None) -> Path:
                     CV_LATEX_DIR / PHOTO_REL)
 
     if not out_name:
-        import hashlib
-        import time as _t
-        h = hashlib.md5((offer.get("url") or offer.get("title") or "cv").encode()).hexdigest()[:8]
-        # Suffixe horaire -> nom unique à chaque génération : évite tout conflit
-        # avec un PDF du même nom déjà OUVERT (Windows verrouille le fichier,
-        # ce qui ferait échouer la compilation LaTeX).
-        out_name = f"CV_Ali_Jamai_{h}_{_t.strftime('%H%M%S')}"
+        candidate_full_name = exp_data.get("candidate", {}).get("full_name", "Ali Jamai")
+        out_name = build_cv_filename(offer, candidate_name=candidate_full_name)
+
     tex_path = CV_LATEX_DIR / f"{out_name}.tex"
+    pdf_path = tex_path.with_suffix(".pdf")
+    # Si le PDF existe déjà et est verrouillé par un visualiseur (Windows),
+    # on ajoute un suffixe temporel pour ne jamais bloquer la compilation.
+    if pdf_path.exists():
+        try:
+            with open(pdf_path, "a+b"):
+                pass
+        except OSError:
+            import time as _t
+            out_name = f"{out_name}_{_t.strftime('%H%M%S')}"
+            tex_path = CV_LATEX_DIR / f"{out_name}.tex"
 
     # Mise en page adaptative : on réduit puces puis expériences jusqu'à tenir
     # sur une seule page (CV de stage = 1 page impérative). Si une sélection ne
