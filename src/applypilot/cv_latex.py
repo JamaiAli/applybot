@@ -46,6 +46,14 @@ _PRO_TYPES = {"experience_pro", "challenge"}
 # Expériences obligatoires : le projet Airbus doit apparaître dans TOUS les CV sans exception.
 MANDATORY_EXP_IDS = ["etude-hydrogene-airbus"]
 
+# Expériences professionnelles fixes : apparaissent TOUJOURS dans cet ordre exact
+# dans \section{Expériences professionnelles} avec leurs puces verbatim (Airbus 3, Shellter 1, CyberQuest 1).
+FIXED_PRO_EXP_IDS = [
+    "etude-hydrogene-airbus",
+    "shellter",
+    "cyberquest",
+]
+
 
 # ---------------------------------------------------------------------------
 # Utilitaires
@@ -84,8 +92,11 @@ def latex_escape(s: str) -> str:
     non géré par pdflatex (sinon « Unicode character not set up » = échec)."""
     if not s:
         return ""
+    # Gestion propre du symbole multiplication avec un seul espace autour
+    s = re.sub(r"\s*×\s*", " @@TIMES@@ ", s)
     for uni, repl in _UNICODE_FIX.items():
-        s = s.replace(uni, repl)
+        if uni != "×":
+            s = s.replace(uni, repl)
     for uni, repl in _EXTRA_FIX.items():
         s = s.replace(uni, repl)
     out = []
@@ -318,15 +329,38 @@ def _render_tex(exp_data: dict, selection: dict, offer: dict,
                 max_exp: int = 7, max_bullets: int = 2) -> str:
     cand = exp_data["candidate"]
     by_id = {e["id"]: e for e in exp_data["experiences"]}
-    raw_sel = [by_id[i] for i in selection.get("selected_experience_ids", []) if i in by_id]
-    # RÈGLE ABSOLUE : Le projet Airbus doit apparaître dans tous les CV sans exception.
-    mandatory = [by_id[m] for m in MANDATORY_EXP_IDS if m in by_id]
-    others = [e for e in raw_sel if e["id"] not in MANDATORY_EXP_IDS]
-    budget_others = max(0, max_exp - len(mandatory))
-    selected = others[:budget_others] + mandatory
 
-    projets = [e for e in selected if e.get("type") not in _PRO_TYPES]
-    experiences = [e for e in selected if e.get("type") in _PRO_TYPES]
+    # 1. Expériences professionnelles : strictement fixes conformément au modèle ATS Claude
+    # - Étude Hydrogène Airbus x Univ Hambourg (3 puces)
+    # - Stage DevOps Shellter (1 puce)
+    # - Plateforme CyberQuest (1 puce)
+    fixed_pro_entries = []
+    for fid in FIXED_PRO_EXP_IDS:
+        if fid in by_id:
+            b_count = 3 if fid == "etude-hydrogene-airbus" else 1
+            fixed_pro_entries.append(_render_xp_block(by_id[fid], max_bullets=b_count))
+
+    sec_exp = "\\section{Expériences professionnelles}\n\n" + "\n\n".join(fixed_pro_entries)
+
+    # 2. Audits & projets cybersécurité : sélectionnés selon l'offre et adaptés à la page
+    raw_sel = selection.get("selected_experience_ids", [])
+    selected_proj_ids = [pid for pid in raw_sel if pid not in FIXED_PRO_EXP_IDS and pid in by_id]
+    if len(selected_proj_ids) < max_exp:
+        for e in exp_data.get("experiences", []):
+            if e["id"] not in FIXED_PRO_EXP_IDS and e["id"] not in selected_proj_ids:
+                selected_proj_ids.append(e["id"])
+                if len(selected_proj_ids) >= max_exp:
+                    break
+
+    projets = [by_id[pid] for pid in selected_proj_ids[:max_exp]]
+    proj_blocks = []
+    for idx, p in enumerate(projets):
+        b_count = max_bullets if idx == 0 else 1
+        proj_blocks.append(_render_xp_block(p, max_bullets=b_count))
+
+    sec_projets = ""
+    if proj_blocks:
+        sec_projets = "\\section{Audits \\& projets cybersécurité}\n\n" + "\n\n".join(proj_blocks)
 
     # Formation (verbatim depuis le JSON, format ATS)
     formation_lines = []
@@ -337,16 +371,6 @@ def _render_tex(exp_data: dict, selection: dict, offer: dict,
         vspace = r"\par\vspace{3pt}" if i < len(exp_data["education"]) - 1 else r"\par"
         formation_lines.append(f"\\noindent\\textbf{{\\color{{darkgray}}{inst}}} --- {{\\color{{midgray}}{deg}}}\\datesep\\chip{{{dates}}}{vspace}")
     formation = "\n".join(formation_lines)
-
-    # Sections Projets / Expériences (omises si vides)
-    sec_projets = ""
-    if projets:
-        sec_projets = "\\section{Audits \\& projets cybersécurité}\n\n" + "\n\n".join(
-            _render_xp_block(e, max_bullets) for e in projets)
-    sec_exp = ""
-    if experiences:
-        sec_exp = "\\section{Expériences professionnelles}\n\n" + "\n\n".join(
-            _render_xp_block(e, max_bullets) for e in experiences)
 
     # Compétences : catégories ordonnées, 5 catégories max, format ATS \lbl{Cat}Items
     skills = exp_data.get("skills", {})
@@ -698,7 +722,7 @@ def generate_cv(offer: dict, out_name: str | None = None) -> Path:
     last_err = None
     for selection in selections:
         pdf = None
-        for max_exp, max_bullets in [(7, 2), (6, 2), (5, 2), (4, 2), (4, 1), (3, 2), (3, 1)]:
+        for max_exp, max_bullets in [(4, 2), (4, 1), (3, 2), (3, 1), (2, 1)]:
             tex = _render_tex(exp_data, selection, offer, max_exp, max_bullets)
             tex_path.write_text(tex, encoding="utf-8")
             try:
