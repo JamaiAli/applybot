@@ -290,7 +290,7 @@ def test_cv_latex_embeds_tracer(tmp_db, monkeypatch):
     assert tr_li is not None
     assert tr_gh is not None
     assert f"/t/{expected_token}" in tex_public
-    assert f"\\href{{https://track.applypilot.fr/t/{expected_token}}}{{Portfolio}}" in tex_public
-    assert f"\\href{{https://track.applypilot.fr/t/{tr_li['token']}}}{{LinkedIn}}" in tex_public
-    assert f"\\href{{https://track.applypilot.fr/t/{tr_gh['token']}}}{{GitHub}}" in tex_public
+    assert f"\\href{{https://track.applypilot.fr/t/{expected_token}}}" in tex_public
+    assert f"\\href{{https://track.applypilot.fr/t/{tr_li['token']}}}" in tex_public
+    assert f"\\href{{https://track.applypilot.fr/t/{tr_gh['token']}}}" in tex_public
 

@@ -31,13 +31,13 @@ PHOTO_REL = "assets/photo.jpg"  # relatif au dossier de compilation
 
 # Libellés d'affichage des catégories de compétences.
 SKILL_LABELS = {
-    "active_directory_identite": "Active Directory \\& Identité",
+    "securite_audits": "Audit \\& GRC",
+    "active_directory_identite": "Active Directory",
     "systemes_reseaux": "Systèmes \\& Réseau",
-    "devops_devsecops": "Infrastructure \\& DevSecOps",
-    "securite_offensive_pentest": "Sécurité offensive \\& Pentest",
-    "securite_audits": "Sécurité, audit \\& conformité",
-    "developpement": "Développement",
     "ia_data": "IA \\& Data",
+    "devops_devsecops": "DevOps \\& Scripts",
+    "securite_offensive_pentest": "Sécurité offensive \\& Pentest",
+    "developpement": "Développement",
 }
 
 # Types d'expériences classés comme « Expériences » (le reste = « Projets »).
@@ -58,7 +58,7 @@ _LATEX_SPECIALS = {
     "~": r"\textasciitilde{}", "^": r"\textasciicircum{}",
 }
 _UNICODE_FIX = {
-    "→": " vers ", "×": "x", "…": "...", "\u00a0": "~", "‰": "pour mille",
+    "→": " vers ", "×": " @@TIMES@@ ", "…": "...", "\u00a0": "~", "‰": "pour mille",
     "’": "'", "‘": "'", "“": "\"", "”": "\"",
 }
 
@@ -92,7 +92,7 @@ def latex_escape(s: str) -> str:
         elif ord(ch) < 128 or ch in _FRENCH_OK:
             out.append(ch)
         # tout autre caractère Unicode exotique est ignoré (évite l'échec LaTeX)
-    return "".join(out)
+    return "".join(out).replace("@@TIMES@@", r"$\times$")
 
 
 def _offer_text(offer: dict) -> str:
@@ -120,7 +120,7 @@ def _default_selection(exp_data: dict, offer: dict) -> dict:
                 s += 1
         scored.append((s, exp["id"]))
     scored.sort(key=lambda x: x[0], reverse=True)
-    ids = [i for _, i in scored[:5]]
+    ids = [i for _, i in scored[:7]]
 
     # Ordre des compétences : catégories dont un terme apparaît dans l'offre d'abord.
     skills = exp_data["skills"]
@@ -136,13 +136,16 @@ def _default_selection(exp_data: dict, offer: dict) -> dict:
 
 
 def _default_profil(exp_data: dict, offer: dict) -> str:
-    """Accroche de secours (si le LLM est indisponible) : bien rédigée, SANS
-    parenthèse. Générique mais propre."""
-    return ("Élève-ingénieur en cybersécurité à l'INSA Centre Val de Loire, je "
-            "recherche un stage de six mois à partir d'avril 2027. J'aime "
-            "comprendre un système dans son ensemble, de son architecture à sa "
-            "sécurité, et je m'investis avec rigueur dans des projets concrets, "
-            "qu'ils touchent à l'administration, à l'audit ou à la cybersécurité.")
+    """Accroche de secours (si le LLM est indisponible) : professionnelle,
+    concrète et alignée sur le template ATS."""
+    return (
+        "Élève-ingénieur en cybersécurité, je recherche un **stage de 4 à 5 mois à partir d'avril 2027** "
+        "(prolongation possible) en audit et gouvernance cybersécurité. Mes projets d'audit (test d'intrusion "
+        "Active Directory, pentest web OWASP) m'ont appris à identifier méthodiquement les vulnérabilités, à "
+        "rédiger des rapports et à formuler des recommandations actionnables. Rigoureux, à l'aise en anglais "
+        "et habitué à vulgariser des sujets techniques, je souhaite développer une vision transverse de la "
+        "cybersécurité au sein d'un groupe international."
+    )
 
 
 def _llm_selection(offer: dict, exp_data: dict) -> dict | None:
@@ -207,7 +210,7 @@ def _llm_selection(offer: dict, exp_data: dict) -> dict | None:
         "Renvoie un JSON avec EXACTEMENT ces clés :\n"
         '{\n'
         '  "profil": ' + json.dumps(profil_rule, ensure_ascii=False) + ',\n'
-        '  "selected_experience_ids": ["<3 à 4 ids les plus pertinents POUR L\'ANGLE '
+        '  "selected_experience_ids": ["<4 à 6 ids les plus pertinents POUR L\'ANGLE '
         'de cette offre, ordonnés du plus pertinent au moins>"],\n'
         '  "skills_order": ["<catégories de compétences, pertinentes en premier>"]\n'
         "}"
@@ -235,7 +238,7 @@ def _llm_selection(offer: dict, exp_data: dict) -> dict | None:
     # Complète avec les catégories manquantes pour ne rien perdre.
     order += [c for c in exp_data["skills"] if c not in order]
     profil = (data.get("profil") or "").strip() or _default_profil(exp_data, offer)
-    return {"profil": profil, "selected_experience_ids": sel[:4], "skills_order": order}
+    return {"profil": profil, "selected_experience_ids": sel[:7], "skills_order": order}
 
 
 def _extract_json(raw: str) -> dict | None:
@@ -253,74 +256,151 @@ def _extract_json(raw: str) -> dict | None:
 # ---------------------------------------------------------------------------
 # Rendu LaTeX
 # ---------------------------------------------------------------------------
+def _format_dates(raw_dates: str) -> str:
+    if not raw_dates:
+        return ""
+    s = re.sub(r"\s*(?:--|[–—−-])\s*", " -- ", raw_dates.strip())
+    return latex_escape(s)
+
+
+def _render_bullet(b: str) -> str:
+    """Rend une puce en préservant le balisage gras **...** -> \\textbf{...}
+    tout en échappant proprement le reste pour LaTeX."""
+    if not b:
+        return ""
+    parts = re.split(r"(\*\*.*?\*\*)", b)
+    out = []
+    for p in parts:
+        if p.startswith("**") and p.endswith("**"):
+            inner = latex_escape(p[2:-2])
+            out.append(f"\\textbf{{{inner}}}")
+        else:
+            out.append(latex_escape(p))
+    return "".join(out)
+
+
 def _render_xp_block(exp: dict, max_bullets: int = 3) -> str:
     title = latex_escape(exp["title"])
-    org = latex_escape(exp.get("org", ""))
-    dates = latex_escape(exp.get("dates", ""))
-    lines = [f"\\xp{{{title}}}{{{org}}}{{{dates}}}"]
+    dates = _format_dates(exp.get("dates", ""))
+    org = exp.get("org", "").strip()
+
+    heading = title
+    if org and org not in title and "Projet académique" not in org:
+        short_org = org
+        if "challenge" in org.lower():
+            short_org = "challenge ECIU, Hambourg"
+        elif "ormvag" in org.lower() or "stage devops" in org.lower():
+            short_org = "ORMVAG"
+        elif "projet personnel" in org.lower():
+            short_org = "projet personnel"
+        heading = f"{title} \\textnormal{{\\color{{midgray}}({latex_escape(short_org)})}}"
+
+    lines = [f"\\entry{{{heading}}}{{{dates}}}"]
     bullets = exp.get("bullets", [])[:max_bullets]
     if bullets:
         lines.append("\\begin{itemize}")
         for b in bullets:
-            lines.append(f"  \\item {latex_escape(b)}")
+            lines.append(f"  \\item {_render_bullet(b)}")
         lines.append("\\end{itemize}")
     return "\n".join(lines)
 
 
 def _render_tex(exp_data: dict, selection: dict, offer: dict,
-                max_exp: int = 4, max_bullets: int = 3) -> str:
+                max_exp: int = 7, max_bullets: int = 2) -> str:
     cand = exp_data["candidate"]
     by_id = {e["id"]: e for e in exp_data["experiences"]}
-    selected = [by_id[i] for i in selection["selected_experience_ids"] if i in by_id][:max_exp]
+    selected = [by_id[i] for i in selection.get("selected_experience_ids", []) if i in by_id][:max_exp]
 
-    projets = [e for e in selected if e["type"] not in _PRO_TYPES]
-    experiences = [e for e in selected if e["type"] in _PRO_TYPES]
+    projets = [e for e in selected if e.get("type") not in _PRO_TYPES]
+    experiences = [e for e in selected if e.get("type") in _PRO_TYPES]
 
-    # Formation (verbatim depuis le JSON)
-    formation = "\n".join(
-        f"\\xp{{{latex_escape(ed['degree'])}}}{{{latex_escape(ed['institution'])}}}"
-        f"{{{latex_escape(ed.get('dates',''))}}}"
-        for ed in exp_data["education"]
-    )
-
-    # Compétences : catégories ordonnées, contenu verbatim
-    skills = exp_data["skills"]
-    comp_lines = []
-    for cat in selection["skills_order"]:
-        if cat not in skills or not skills[cat]:
-            continue
-        label = SKILL_LABELS.get(cat, cat.replace("_", " ").title())
-        items = ", ".join(latex_escape(t) for t in skills[cat])
-        comp_lines.append(f"\\textbf{{{label} :}} {items}.\\\\")
-    competences = "\n".join(comp_lines)
-
-    # Langues / certif / centres d'intérêt (verbatim)
-    langs = " ; ".join(f"{latex_escape(l['langue'])} {latex_escape(l['niveau'])}"
-                       for l in exp_data.get("languages", []))
-    certs = ", ".join(latex_escape(c) for c in exp_data.get("certifications", []))
-    achievements = " ; ".join(latex_escape(a) for a in exp_data.get("achievements", [])[:3])
-
-    title = latex_escape(offer.get("title") or "Stage")
-    company = latex_escape(offer.get("company") or offer.get("site") or "")
-    candidature = f"Candidature : {title}" + (f" --- {company}" if company else "")
-    profil = latex_escape(selection["profil"])
+    # Formation (verbatim depuis le JSON, format ATS)
+    formation_lines = []
+    for i, ed in enumerate(exp_data.get("education", [])):
+        inst = latex_escape(ed["institution"])
+        deg = latex_escape(ed["degree"])
+        dates = _format_dates(ed.get("dates", ""))
+        vspace = r"\par\vspace{3pt}" if i < len(exp_data["education"]) - 1 else r"\par"
+        formation_lines.append(f"\\noindent\\textbf{{\\color{{darkgray}}{inst}}} --- {{\\color{{midgray}}{deg}}}\\datesep\\chip{{{dates}}}{vspace}")
+    formation = "\n".join(formation_lines)
 
     # Sections Projets / Expériences (omises si vides)
     sec_projets = ""
     if projets:
-        sec_projets = "\\cvsection{Projets}\n" + "\n\n".join(
+        sec_projets = "\\section{Audits \\& projets cybersécurité}\n\n" + "\n\n".join(
             _render_xp_block(e, max_bullets) for e in projets)
     sec_exp = ""
     if experiences:
-        sec_exp = "\\cvsection{Expériences}\n" + "\n\n".join(
+        sec_exp = "\\section{Expériences professionnelles}\n\n" + "\n\n".join(
             _render_xp_block(e, max_bullets) for e in experiences)
 
-    # Liens traceurs (JobNavigator Tracer Links / Read receipts : Portfolio, LinkedIn, GitHub)
-    # RÈGLE DE SÉCURITÉ ATS ABSOLUE :
-    # N'injecter les traceurs dans le PDF que s'il s'agit d'une URL HTTPS publique externe valide.
-    # Si le serveur est local (localhost / 127.0.0.1 / IP privée), les scanners antivirus/SSRF des ATS
-    # (Phenom People / Orange, Workday, Taleo, Greenhouse) rejettent le CV avec l'erreur :
-    # « Impossible de télécharger le CV. Veuillez en choisir un autre. »
+    # Compétences : catégories ordonnées, 5 catégories max, format ATS \lbl{Cat}Items
+    skills = exp_data.get("skills", {})
+    comp_lines = []
+    top_cats = [c for c in selection.get("skills_order", []) if c in skills and skills[c]][:5]
+    if not top_cats:
+        top_cats = list(skills.keys())[:5]
+    for i, cat in enumerate(top_cats):
+        label = SKILL_LABELS.get(cat, cat.replace("_", " ").title())
+        items = ", ".join(latex_escape(t) for t in skills[cat][:8])
+        sep = r"\par\vspace{1.5pt}" if i < len(top_cats) - 1 else r"\par"
+        comp_lines.append(f"\\lbl{{{label}}}{items}.{sep}")
+    competences = "\n".join(comp_lines)
+
+    # Certifications & Langues
+    certs = " ; ".join(latex_escape(c) for c in exp_data.get("certifications", []))
+    if certs and not certs.endswith("."):
+        certs += "."
+    langs = " ; ".join(
+        f"{latex_escape(l['langue'])} --- {latex_escape(l['niveau']).lower()}"
+        for l in exp_data.get("languages", [])
+    )
+    if langs and not langs.endswith("."):
+        langs += "."
+    certifs_langues = (
+        f"\\lbl{{Certifications cybersécurité}}{certs}\\par\\vspace{{1.5pt}}\n"
+        f"\\lbl{{Langues}}{langs}\\par"
+    )
+
+    # Engagement (achievements)
+    achieve_lines = []
+    for a in exp_data.get("achievements", [])[:2]:
+        achieve_lines.append(f"  \\item {_render_bullet(a)}")
+    achievements = "\n".join(achieve_lines)
+
+    # Qualités & Loisirs
+    soft_skills = ", ".join(latex_escape(s) for s in exp_data.get("soft_skills", []))
+    if soft_skills and not soft_skills.endswith("."):
+        soft_skills += "."
+
+    loisirs = ", ".join(latex_escape(l) for l in exp_data.get("loisirs", []))
+    if not loisirs:
+        loisirs = "Échecs, course à pied, tennis."
+    elif not loisirs.endswith("."):
+        loisirs += "."
+
+    # Titre du bandeau cible (clean, uppercase ATS)
+    raw_title = offer.get("title") or "AUDIT CYBERSÉCURITÉ & GRC"
+    clean_title = re.sub(r"\b(F/H|H/F|M/F|H/X)\b", "", raw_title, flags=re.IGNORECASE)
+    clean_title = re.sub(r"\(\d+[-_]?\d*\)", "", clean_title)
+    clean_title = re.sub(r"^\s*stage\s*[-–—:]?\s*", "", clean_title, flags=re.IGNORECASE).strip()
+    clean_title = re.sub(r"\s+", " ", clean_title).strip()
+    if not clean_title:
+        clean_title = "AUDIT CYBERSÉCURITÉ & GRC"
+    candidature = f"STAGE --- {latex_escape(clean_title.upper())}"
+    pdftitle = f"CV Ali Jamai - Stage {latex_escape(clean_title)}"
+
+    # Profil
+    profil = _render_bullet(selection.get("profil") or _default_profil(exp_data, offer))
+
+    # Photo node
+    photo_path = CV_LATEX_DIR / PHOTO_REL
+    if photo_path.exists():
+        photo_node = f"\\node at (0,0) {{\\includegraphics[width=2.45cm]{{{PHOTO_REL}}}}};"
+    else:
+        photo_node = r"\node at (0,0) {\fontsize{20}{20}\selectfont\bfseries\color{primary} AJ};"
+
+    # Liens traceurs (JobNavigator Tracer Links)
     portfolio_link = cand.get("portfolio") or "https://jamaiali.github.io"
     linkedin_link = cand.get("linkedin") or "https://www.linkedin.com/in/ali-jamai-078602297"
     github_link = cand.get("github") or "https://github.com/JamaiAli"
@@ -342,23 +422,35 @@ def _render_tex(exp_data: dict, selection: dict, offer: dict,
     except Exception as exc:
         log.warning("Traceurs CV non initialisés : %s", exc)
 
+    # Nettoyage de la localisation pour l'en-tête (ex: '18000 Bourges')
+    loc = cand.get("location", "18000 Bourges")
+    if "Bourges" in loc:
+        loc = "18000 Bourges"
+
     fields = {
         "NAME": latex_escape(cand["full_name"]),
-        "SUBTITLE": latex_escape(cand["title"]),
-        "LOCATION": latex_escape(cand["location"]),
+        "SUBTITLE": "ÉLÈVE-INGÉNIEUR EN CYBERSÉCURITÉ --- INSA CVL",
+        "LOCATION": latex_escape(loc),
         "PHONE": latex_escape(cand["phone"]),
         "EMAIL": cand["email"],
         "LINKEDIN": linkedin_link,
+        "LINKEDIN_LABEL": "linkedin.com/in/ali-jamai-078602297",
         "GITHUB": github_link,
+        "GITHUB_LABEL": "github.com/JamaiAli",
         "PORTFOLIO": portfolio_link,
-        "PHOTO": PHOTO_REL,
+        "PORTFOLIO_LABEL": "jamaiali.github.io",
+        "PHOTO_NODE": photo_node,
         "CANDIDATURE": candidature,
+        "PDFTITLE": pdftitle,
         "PROFIL": profil,
         "FORMATION": formation,
         "PROJETS": sec_projets,
         "EXPERIENCES": sec_exp,
         "COMPETENCES": competences,
-        "LANGUES": langs, "CERTIFS": certs, "ACHIEVEMENTS": achievements,
+        "CERTIFS_LANGUES": certifs_langues,
+        "ACHIEVEMENTS": achievements,
+        "SOFT_SKILLS": soft_skills,
+        "LOISIRS": loisirs,
     }
     tex = _TEMPLATE
     for key, val in fields.items():
@@ -366,73 +458,130 @@ def _render_tex(exp_data: dict, selection: dict, offer: dict,
     return tex
 
 
-_TEMPLATE = r"""\documentclass[11pt,a4paper]{article}
-\usepackage[utf8]{inputenc}
+_TEMPLATE = r"""\documentclass[10pt,a4paper]{article}
+% ---- ATS : table Unicode propre pour chaque glyphe (copier-coller / parsing fiables) ----
+\input{glyphtounicode}
+\pdfgentounicode=1
+
 \usepackage[T1]{fontenc}
-\usepackage[french]{babel}
-\usepackage[a4paper,top=0.8cm,bottom=0.8cm,left=1.4cm,right=1.4cm]{geometry}
-\usepackage{lmodern}
+\usepackage[utf8]{inputenc}
+\usepackage[scaled=0.92]{helvet}
+\renewcommand{\familydefault}{\sfdefault}
+\usepackage[a4paper,top=0.8cm,bottom=0.6cm,left=1.4cm,right=1.4cm]{geometry}
 \usepackage{xcolor}
 \usepackage{enumitem}
+\usepackage{titlesec}
 \usepackage{graphicx}
 \usepackage{tikz}
-\usepackage[hidelinks]{hyperref}
+\usepackage{amssymb}
+\usepackage{hyperref}
 
-\definecolor{accent}{HTML}{1F3A5F}
-\definecolor{grey}{HTML}{555555}
+% ---- Palette ----
+\definecolor{primary}{HTML}{16425B}
+\definecolor{accent}{HTML}{2980B9}
+\definecolor{chipbg}{HTML}{E8F0F6}
+\definecolor{darkgray}{HTML}{2B2B2B}
+\definecolor{midgray}{HTML}{5A5A5A}
+\definecolor{rule}{HTML}{C9D6DF}
 
-\setlist[itemize]{leftmargin=1.2em,itemsep=0pt,topsep=1pt,parsep=0pt}
-\pagestyle{empty}
+\hypersetup{colorlinks=true,urlcolor=accent,linkcolor=accent,pdftitle={@@PDFTITLE@@},pdfauthor={Ali Jamai}}
+
+% ---- Titres de section : VRAIES majuscules (pas de petites capitales -> lisible par les ATS) ----
+\titleformat{\section}
+  {\color{primary}\bfseries\normalsize}
+  {}{0em}
+  {\raisebox{0.05ex}{\textcolor{accent}{\rule{2mm}{2mm}}}\hspace{6pt}\MakeUppercase}
+  [{\vspace{-3pt}\color{rule}\titlerule[1pt]}]
+\titlespacing{\section}{0pt}{4pt}{2pt}
+
 \setlength{\parindent}{0pt}
-\renewcommand{\baselinestretch}{0.90}
+\pagestyle{empty}
+\linespread{0.99}
 
-\newcommand{\roundphoto}[1]{%
-  \begin{tikzpicture}
-    \begin{scope}
-      \clip (0,0) circle (1.35cm);
-      \node at (0,-0.18cm) {\includegraphics[width=3.0cm]{#1}};
-    \end{scope}
-    \draw[accent, line width=0.9pt] (0,0) circle (1.35cm);
-  \end{tikzpicture}}
+% ---- Dates : collées au titre (alignées à droite, certains parseurs ATS les rattachent à la mauvaise ligne) ----
+\newcommand{\chip}[1]{{\footnotesize\bfseries\color{accent}#1}}
+\newcommand{\datesep}{\hspace{0.5em}{\color{rule}\textbar}\hspace{0.5em}}
 
-\newcommand{\cvsection}[1]{%
-  \vspace{3pt}%
-  {\normalsize\bfseries\color{accent}\MakeUppercase{#1}}\\[-4pt]%
-  {\color{accent}\rule{\linewidth}{0.8pt}}\\[1pt]%
+% ---- Entrée : titre + date ----
+\newcommand{\entry}[2]{%
+  \vspace{2.5pt}%
+  \noindent\textbf{\color{darkgray}#1}\datesep\chip{#2}\par\vspace{1.5pt}%
 }
-\newcommand{\xp}[3]{\textbf{#1} \hfill {\color{grey}\small #3}\\{\color{accent}\small #2}\par\vspace{2pt}}
+
+\newcommand{\arrowbullet}{\textcolor{accent}{\small\raisebox{0.1ex}{$\blacktriangleright$}}}
+\setlist[itemize]{leftmargin=1.3em,itemsep=1.2pt,topsep=1.5pt,parsep=0pt,label=\arrowbullet}
+
+% ---- Libellé de ligne (compétences, langues...) ----
+\newcommand{\lbl}[1]{\textbf{\color{primary}#1\,:}\enspace}
 
 \begin{document}
 
-\begin{minipage}[c]{0.73\linewidth}
-  {\Huge\bfseries\color{accent} @@NAME@@}\\[2pt]
-  {\large @@SUBTITLE@@}\\[4pt]
-  {\color{grey}\small @@LOCATION@@ \quad|\quad @@PHONE@@ \quad|\quad \href{mailto:@@EMAIL@@}{@@EMAIL@@}}\\
-  {\color{grey}\small \href{@@LINKEDIN@@}{LinkedIn} \quad|\quad \href{@@GITHUB@@}{GitHub} \quad|\quad \href{@@PORTFOLIO@@}{Portfolio}}
-\end{minipage}\hfill
-\begin{minipage}[c]{0.24\linewidth}
-  \raggedleft\roundphoto{@@PHOTO@@}
+% ======================= EN-TÊTE =======================
+\begin{minipage}[c]{0.15\textwidth}
+  \begin{tikzpicture}
+    \begin{scope}
+      \clip (0,0) circle (1.08cm);
+      @@PHOTO_NODE@@
+    \end{scope}
+    \draw[primary,line width=1.1pt] (0,0) circle (1.08cm);
+  \end{tikzpicture}
+\end{minipage}%
+\hspace{0.015\textwidth}%
+\begin{minipage}[c]{0.835\textwidth}
+  {\fontsize{26}{28}\selectfont\bfseries\color{primary} @@NAME@@}\\[2pt]
+  {\color{accent}\small\bfseries @@SUBTITLE@@}\\[5pt]
+  {\footnotesize\color{midgray}%
+    \textbf{\color{primary}Lieu\,:} @@LOCATION@@ \;\textcolor{rule}{\textbar}\;
+    \textbf{\color{primary}Tél\,:} @@PHONE@@ \;\textcolor{rule}{\textbar}\;
+    \textbf{\color{primary}Email\,:} \href{mailto:@@EMAIL@@}{@@EMAIL@@}\\[3pt]
+    \textbf{\color{primary}LinkedIn\,:} \href{@@LINKEDIN@@}{@@LINKEDIN_LABEL@@} \;\textcolor{rule}{\textbar}\;
+    \textbf{\color{primary}GitHub\,:} \href{@@GITHUB@@}{@@GITHUB_LABEL@@} \;\textcolor{rule}{\textbar}\;
+    \textbf{\color{primary}Web\,:} \href{@@PORTFOLIO@@}{@@PORTFOLIO_LABEL@@}%
+  }
 \end{minipage}
 
+\vspace{5pt}
+% ---- Bandeau cible ----
+\noindent\colorbox{primary}{\makebox[\dimexpr\textwidth-2\fboxsep\relax][c]{%
+  \color{white}\bfseries\normalsize @@CANDIDATURE@@%
+}}
+
 \vspace{4pt}
-{\color{accent}\small\itshape @@CANDIDATURE@@}
+{\color{darkgray}\small @@PROFIL@@}
 
-\cvsection{Profil}
-@@PROFIL@@
-
-\cvsection{Formation}
+% ======================= FORMATION =======================
+\section{Formation}
 @@FORMATION@@
 
+% ======================= AUDITS & PROJETS =======================
 @@PROJETS@@
 
+% ======================= EXPÉRIENCES =======================
 @@EXPERIENCES@@
 
-\cvsection{Compétences clés}
+% ======================= BAS DE PAGE : UNE SEULE COLONNE (ordre de lecture linéaire) =======================
+\section{Compétences techniques}
+{\footnotesize
 @@COMPETENCES@@
+}
 
-\cvsection{Langues, certification \& centres d'intérêt}
-\textbf{Langues :} @@LANGUES@@.\quad \textbf{Certification :} @@CERTIFS@@.\\
-\textbf{Centres d'intérêt :} @@ACHIEVEMENTS@@.
+\section{Certifications \& Langues}
+{\footnotesize
+@@CERTIFS_LANGUES@@
+}
+
+\section{Engagement}
+{\footnotesize
+\begin{itemize}
+@@ACHIEVEMENTS@@
+\end{itemize}
+}
+
+\section{Qualités \& Loisirs}
+{\footnotesize
+\lbl{Savoir-être}@@SOFT_SKILLS@@\par
+\lbl{Loisirs}@@LOISIRS@@
+}
 
 \end{document}
 """
@@ -535,7 +684,7 @@ def generate_cv(offer: dict, out_name: str | None = None) -> Path:
     last_err = None
     for selection in selections:
         pdf = None
-        for max_exp, max_bullets in [(4, 3), (4, 2), (3, 2), (3, 1)]:
+        for max_exp, max_bullets in [(7, 2), (6, 2), (5, 2), (4, 2), (4, 1), (3, 2), (3, 1)]:
             tex = _render_tex(exp_data, selection, offer, max_exp, max_bullets)
             tex_path.write_text(tex, encoding="utf-8")
             try:
