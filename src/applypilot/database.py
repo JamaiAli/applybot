@@ -276,9 +276,14 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
             last_opened_at  TEXT,
             open_count      INTEGER DEFAULT 0,
             user_agent      TEXT,
-            ip              TEXT
+            ip              TEXT,
+            link_type       TEXT DEFAULT 'portfolio'
         )
     """)
+    try:
+        conn.execute("ALTER TABLE cv_trackers ADD COLUMN link_type TEXT DEFAULT 'portfolio'")
+    except Exception:
+        pass
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_cv_trackers_job_url ON cv_trackers(job_url)"
     )
@@ -2287,18 +2292,19 @@ def create_cv_tracker(
     company: str,
     title: str,
     target_url: str,
+    link_type: str = "portfolio",
     conn: sqlite3.Connection | None = None,
 ) -> None:
-    """Enregistre un nouveau token de tracking pour un CV adapté."""
+    """Enregistre un nouveau token de tracking pour un CV adapté ou profil (portfolio, linkedin, github)."""
     c = conn or get_connection()
     now_iso = datetime.now(timezone.utc).isoformat()
     c.execute(
         """
         INSERT OR REPLACE INTO cv_trackers
-            (token, job_url, company, title, target_url, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+            (token, job_url, company, title, target_url, link_type, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        (token, job_url, company, title, target_url, now_iso),
+        (token, job_url, company, title, target_url, link_type, now_iso),
     )
     commit_with_retry(c)
 
@@ -2311,13 +2317,13 @@ def get_tracker(token: str, conn: sqlite3.Connection | None = None) -> dict | No
     return dict(row) if row else None
 
 
-def get_tracker_by_job_url(job_url: str, conn: sqlite3.Connection | None = None) -> dict | None:
-    """Récupère un traceur déjà existant pour une offre donnée."""
+def get_tracker_by_job_url(job_url: str, link_type: str = "portfolio", conn: sqlite3.Connection | None = None) -> dict | None:
+    """Récupère un traceur déjà existant pour une offre donnée et un type de lien."""
     c = conn or get_connection()
     c.row_factory = sqlite3.Row
     row = c.execute(
-        "SELECT * FROM cv_trackers WHERE job_url = ? ORDER BY created_at DESC LIMIT 1",
-        (job_url,),
+        "SELECT * FROM cv_trackers WHERE job_url = ? AND COALESCE(link_type, 'portfolio') = ? ORDER BY created_at DESC LIMIT 1",
+        (job_url, link_type),
     ).fetchone()
     return dict(row) if row else None
 
@@ -2372,14 +2378,24 @@ def get_recent_trackers(limit: int = 15, conn: sqlite3.Connection | None = None)
 
 
 def get_tracker_stats(conn: sqlite3.Connection | None = None) -> dict:
-    """Statistiques globales des traceurs."""
+    """Statistiques globales des traceurs avec répartition par type de lien."""
     c = conn or get_connection()
     total_trackers = c.execute("SELECT COUNT(*) FROM cv_trackers").fetchone()[0]
     opened_trackers = c.execute("SELECT COUNT(*) FROM cv_trackers WHERE open_count > 0").fetchone()[0]
     total_opens = c.execute("SELECT COALESCE(SUM(open_count), 0) FROM cv_trackers").fetchone()[0]
+
+    by_type = {}
+    for ltype in ("portfolio", "linkedin", "github"):
+        cnt = c.execute(
+            "SELECT COALESCE(SUM(open_count), 0) FROM cv_trackers WHERE COALESCE(link_type, 'portfolio') = ?",
+            (ltype,),
+        ).fetchone()[0]
+        by_type[ltype] = cnt
+
     return {
         "total_trackers": total_trackers,
         "opened_trackers": opened_trackers,
         "total_opens": total_opens,
+        "by_type": by_type,
     }
 

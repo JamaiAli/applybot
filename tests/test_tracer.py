@@ -187,6 +187,16 @@ async def test_tracer_http_redirect_and_hit(tmp_db):
         assert tr["open_count"] == 1
         assert "Windows" in parse_user_agent(tr["user_agent"])
 
+        # Test lien permanent direct /t/linkedin
+        resp_li = await client.get("/t/linkedin", allow_redirects=False)
+        assert resp_li.status == 302
+        assert "linkedin.com" in resp_li.headers["Location"]
+
+        # Test lien permanent direct /t/github
+        resp_gh = await client.get("/t/github", allow_redirects=False)
+        assert resp_gh.status == 302
+        assert "github.com" in resp_gh.headers["Location"]
+
         # Vérifie la route health
         health = await client.get("/health")
         assert health.status == 200
@@ -274,6 +284,13 @@ def test_cv_latex_embeds_tracer(tmp_db, monkeypatch):
     # Lorsque TRACER_BASE_URL est configuré avec un domaine public HTTPS, le lien est injecté
     monkeypatch.setattr(config, "TRACER_BASE_URL", "https://track.applypilot.fr")
     tex_public = cv_latex._render_tex(exp, sel, offer, 4, 3)
+    # Vérification que le TeX contient les 3 liens de tracking quand TRACER_BASE_URL est public
+    tr_li = get_tracker_by_job_url(offer["url"], link_type="linkedin")
+    tr_gh = get_tracker_by_job_url(offer["url"], link_type="github")
+    assert tr_li is not None
+    assert tr_gh is not None
     assert f"/t/{expected_token}" in tex_public
     assert f"\\href{{https://track.applypilot.fr/t/{expected_token}}}{{Portfolio}}" in tex_public
+    assert f"\\href{{https://track.applypilot.fr/t/{tr_li['token']}}}{{LinkedIn}}" in tex_public
+    assert f"\\href{{https://track.applypilot.fr/t/{tr_gh['token']}}}{{GitHub}}" in tex_public
 

@@ -647,45 +647,64 @@ async def done_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def trackers_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Affiche les statistiques et dernières consultations de CV (Tracer Links)."""
+    """Affiche les statistiques et dernières consultations de CV et profils (Portfolio, LinkedIn, GitHub)."""
     if not _authorized(update):
         return await _deny(update)
     from applypilot.database import get_recent_trackers, get_tracker_stats
     from applypilot.tracking.tracer import parse_user_agent
     stats = get_tracker_stats()
-    recent = get_recent_trackers(10)
+    by_type = stats.get("by_type", {})
+    recent = get_recent_trackers(15)
     lines = [
-        "📊 <b>Suivi des consultations de CV (Tracer Links)</b>",
-        f"• Total traceurs générés : <b>{stats['total_trackers']}</b>",
-        f"• CV ouverts par un recruteur : <b>{stats['opened_trackers']}</b>",
-        f"• Total consultations : <b>{stats['total_opens']}</b>",
+        "📊 <b>Suivi des consultations (Tracer Links)</b>",
+        f"• Total liens tracés : <b>{stats['total_trackers']}</b>",
+        f"• Liens ouverts par un recruteur : <b>{stats['opened_trackers']}</b>",
+        f"• Total clics / consultations : <b>{stats['total_opens']}</b>",
+        "",
+        "🎯 <b>Détail des ouvertures :</b>",
+        f"  🌐 Portfolio : <b>{by_type.get('portfolio', 0)}</b> consultation(s)",
+        f"  💼 LinkedIn : <b>{by_type.get('linkedin', 0)}</b> consultation(s)",
+        f"  🐙 GitHub : <b>{by_type.get('github', 0)}</b> consultation(s)",
+        "",
         f"• Serveur traceur : <code>{config.TRACER_BASE_URL}</code>",
         "",
     ]
     if not recent:
         lines.append("<i>Aucun traceur enregistré pour le moment.</i>")
     else:
-        lines.append("<b>Derniers traceurs :</b>")
+        lines.append("<b>Dernières consultations :</b>")
         for t in recent:
             comp = html.escape(t.get("company") or "Entreprise")
             tit = html.escape((t.get("title") or "Offre")[:32])
+            ltype = t.get("link_type", "portfolio")
+            badge = {
+                "linkedin": "💼 LinkedIn",
+                "github": "🐙 GitHub",
+                "portfolio": "🌐 Portfolio",
+            }.get(ltype, f"🔗 {ltype.capitalize()}")
             cnt = t.get("open_count") or 0
             if cnt > 0:
                 dev = html.escape(parse_user_agent(t.get("user_agent")))
                 dt = t.get("last_opened_at") or t.get("opened_at") or ""
                 dt_str = dt[:16].replace("T", " ") if dt else ""
                 lines.append(
-                    f"🟢 <b>{comp}</b> — {tit}\n"
-                    f"   ↳ <b>{cnt} consultation(s)</b> (Dernière : {dt_str} via {dev})"
+                    f"🟢 <b>{comp}</b> — {tit} [{badge}]\n"
+                    f"   ↳ <b>{cnt} clic(s)</b> (Dernier : {dt_str} via {dev})"
                 )
             else:
-                lines.append(f"⚪ <b>{comp}</b> — {tit}\n   ↳ <i>Pas encore ouvert</i>")
+                lines.append(f"⚪ <b>{comp}</b> — {tit} [{badge}]\n   ↳ <i>Pas encore ouvert</i>")
+
+    lines.append("")
+    lines.append("🔗 <b>Tes liens permanents traqués :</b>")
+    lines.append(f"• 💼 LinkedIn : <code>{config.TRACER_BASE_URL}/t/linkedin</code>")
+    lines.append(f"• 🐙 GitHub : <code>{config.TRACER_BASE_URL}/t/github</code>")
+    lines.append(f"• 🌐 Portfolio : <code>{config.TRACER_BASE_URL}/t/portfolio</code>")
+
     await update.effective_message.reply_text(
         "\n".join(lines),
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
     )
-
 
 def _format_tracking_event(ev: dict) -> str:
     """Formate un événement de réponse recruteur pour Telegram."""

@@ -315,22 +315,32 @@ def _render_tex(exp_data: dict, selection: dict, offer: dict,
         sec_exp = "\\cvsection{Expériences}\n" + "\n\n".join(
             _render_xp_block(e, max_bullets) for e in experiences)
 
-    # Lien traceur (JobNavigator Tracer Links / Read receipts)
+    # Liens traceurs (JobNavigator Tracer Links / Read receipts : Portfolio, LinkedIn, GitHub)
     # RÈGLE DE SÉCURITÉ ATS ABSOLUE :
-    # N'injecter le traceur dans le PDF que s'il s'agit d'une URL HTTPS publique externe valide.
+    # N'injecter les traceurs dans le PDF que s'il s'agit d'une URL HTTPS publique externe valide.
     # Si le serveur est local (localhost / 127.0.0.1 / IP privée), les scanners antivirus/SSRF des ATS
     # (Phenom People / Orange, Workday, Taleo, Greenhouse) rejettent le CV avec l'erreur :
     # « Impossible de télécharger le CV. Veuillez en choisir un autre. »
     portfolio_link = cand.get("portfolio") or "https://jamaiali.github.io"
+    linkedin_link = cand.get("linkedin") or "https://www.linkedin.com/in/ali-jamai-078602297"
+    github_link = cand.get("github") or "https://github.com/JamaiAli"
+
     try:
-        from applypilot.tracking.tracer import get_or_create_tracer
-        _, tracer_url = get_or_create_tracer(offer)
-        if (tracer_url
-                and tracer_url.startswith("https://")
-                and not any(h in tracer_url.lower() for h in ("localhost", "127.0.0.1", "0.0.0.0", "::1", "192.168.", "10.", "172."))):
-            portfolio_link = tracer_url
+        from applypilot.tracking.tracer import get_or_create_all_tracers
+        tracers = get_or_create_all_tracers(offer)
+        is_safe_public = (
+            config.TRACER_BASE_URL.startswith("https://")
+            and not any(h in config.TRACER_BASE_URL.lower() for h in ("localhost", "127.0.0.1", "0.0.0.0", "::1", "192.168.", "10.", "172."))
+        )
+        if is_safe_public:
+            if tracers.get("portfolio"):
+                portfolio_link = tracers["portfolio"]
+            if tracers.get("linkedin"):
+                linkedin_link = tracers["linkedin"]
+            if tracers.get("github"):
+                github_link = tracers["github"]
     except Exception as exc:
-        log.warning("Traceur CV non initialisé : %s", exc)
+        log.warning("Traceurs CV non initialisés : %s", exc)
 
     fields = {
         "NAME": latex_escape(cand["full_name"]),
@@ -338,7 +348,9 @@ def _render_tex(exp_data: dict, selection: dict, offer: dict,
         "LOCATION": latex_escape(cand["location"]),
         "PHONE": latex_escape(cand["phone"]),
         "EMAIL": cand["email"],
-        "LINKEDIN": cand["linkedin"], "GITHUB": cand["github"], "PORTFOLIO": portfolio_link,
+        "LINKEDIN": linkedin_link,
+        "GITHUB": github_link,
+        "PORTFOLIO": portfolio_link,
         "PHOTO": PHOTO_REL,
         "CANDIDATURE": candidature,
         "PROFIL": profil,

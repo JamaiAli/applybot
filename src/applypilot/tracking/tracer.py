@@ -103,41 +103,52 @@ def parse_user_agent(ua: str | None) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Cible par défaut (Portfolio d'Ali Jamai)
+# Cibles officielles d'Ali Jamai (Portfolio, LinkedIn, GitHub)
 # ---------------------------------------------------------------------------
-def get_default_target_url() -> str:
-    """Récupère l'URL de destination (portfolio) depuis experiences.json."""
+def get_candidate_links() -> dict[str, str]:
+    """Récupère les URLs officielles (portfolio, linkedin, github) d'Ali Jamai."""
     exp_path = config.APP_DIR / "experiences.json"
+    cand = {}
     if exp_path.exists():
         try:
             data = json.loads(exp_path.read_text(encoding="utf-8"))
             cand = data.get("candidate", {})
-            return cand.get("portfolio") or cand.get("linkedin") or "https://jamaiali.github.io"
         except Exception:
             pass
-    return "https://jamaiali.github.io"
+    return {
+        "portfolio": cand.get("portfolio") or "https://jamaiali.github.io",
+        "linkedin": cand.get("linkedin") or "https://www.linkedin.com/in/ali-jamai-078602297",
+        "github": cand.get("github") or "https://github.com/JamaiAli",
+    }
+
+
+def get_default_target_url(link_type: str = "portfolio") -> str:
+    """Récupère l'URL de destination selon le type de lien."""
+    links = get_candidate_links()
+    return links.get(link_type) or links["portfolio"]
 
 
 # ---------------------------------------------------------------------------
-# Création & résolution des traceurs
+# Création & résolution des traceurs (Portfolio, LinkedIn, GitHub)
 # ---------------------------------------------------------------------------
 def get_or_create_tracer(
     offer: dict,
     target_url: str | None = None,
+    link_type: str = "portfolio",
 ) -> tuple[str, str]:
-    """Récupère ou crée un lien traceur pour l'offre spécifiée.
+    """Récupère ou crée un lien traceur pour l'offre spécifiée et le type de lien (portfolio, linkedin, github).
 
     Renvoie (token, tracer_url).
     """
     job_url = offer.get("url") or ""
     company = offer.get("company") or offer.get("site") or "Entreprise"
     title = offer.get("title") or "Candidature"
-    target = target_url or get_default_target_url()
+    cand_links = get_candidate_links()
+    target = target_url or cand_links.get(link_type) or cand_links["portfolio"]
 
-    # Si un traceur existe déjà pour cette offre, on le réutilise pour garder
-    # le même lien stable
+    # Si un traceur existe déjà pour cette offre et ce type, on le réutilise
     if job_url:
-        existing = get_tracker_by_job_url(job_url)
+        existing = get_tracker_by_job_url(job_url, link_type=link_type)
         if existing:
             token = existing["token"]
             return token, f"{config.TRACER_BASE_URL}/t/{token}"
@@ -149,10 +160,22 @@ def get_or_create_tracer(
         company=company,
         title=title,
         target_url=target,
+        link_type=link_type,
     )
     tracer_url = f"{config.TRACER_BASE_URL}/t/{token}"
-    log.info("Lien traceur créé pour '%s' (%s) : %s", title, company, tracer_url)
+    log.info("Lien traceur créé pour '%s' (%s, %s) : %s", title, company, link_type, tracer_url)
     return token, tracer_url
+
+
+def get_or_create_all_tracers(offer: dict) -> dict[str, str]:
+    """Crée ou récupère les 3 traceurs (portfolio, linkedin, github) pour cette offre.
+    Renvoie un dictionnaire {"portfolio": url, "linkedin": url, "github": url}.
+    """
+    res = {}
+    for ltype in ("portfolio", "linkedin", "github"):
+        _, turl = get_or_create_tracer(offer, link_type=ltype)
+        res[ltype] = turl
+    return res
 
 
 # ---------------------------------------------------------------------------
@@ -166,21 +189,30 @@ def format_hit_notification(tracker: dict) -> str:
     device = html.escape(parse_user_agent(tracker.get("user_agent")))
     open_count = tracker.get("open_count") or 1
     job_url = tracker.get("job_url") or ""
+    link_type = tracker.get("link_type", "portfolio")
+
+    type_meta = {
+        "linkedin": ("💼", "Profil LinkedIn"),
+        "github": ("🐙", "Projet GitHub"),
+        "portfolio": ("🌐", "Portfolio"),
+    }.get(link_type, ("🔗", link_type.capitalize()))
+    icon, type_label = type_meta
 
     now_fr = datetime.datetime.now().strftime("%d/%m/%Y à %H:%M:%S")
 
     lines = [
-        "🔔 <b>Consultation de ton CV détectée !</b>",
+        f"🔔 <b>Consultation de ton {type_label} détectée !</b>",
         "",
+        f"🎯 <b>Élément consulté :</b> {icon} {type_label}",
         f"🏢 <b>Entreprise :</b> {company}",
-        f"💼 <b>Offre :</b> {title}",
+        f"💼 <b>Contexte / Offre :</b> {title}",
         f"📱 <b>Appareil :</b> {device}",
         f"🌐 <b>IP :</b> <code>{ip}</code>",
         f"🔢 <b>Consultation n° :</b> {open_count}",
         f"⏰ <b>Date :</b> {now_fr}",
     ]
-    if job_url:
-        lines.append(f'🔗 <a href="{html.escape(job_url)}">Voir l\'offre</a>')
+    if job_url and job_url != "profil_permanent":
+        lines.append(f'🔗 <a href="{html.escape(job_url)}">Voir l\'offre associée</a>')
 
     return "\n".join(lines)
 
@@ -214,8 +246,9 @@ async def _notify_owner(bot: Any, tracker: dict) -> None:
 # Serveur HTTP aiohttp
 # ---------------------------------------------------------------------------
 async def handle_tracer(request: web.Request) -> web.StreamResponse:
-    """Route GET /t/{token} : enregistre le clic et redirige vers la cible."""
-    token = request.match_info.get("token", "").strip()
+    """Route GET /t/{token} : enregistre le clic et redirige vers la cible (Portfolio, LinkedIn, GitHub)."""
+    raw_token = request.match_info.get("token", "").strip()
+    token = raw_token.lower()
     # Récupération de la vraie IP (en tenant compte d'un proxy éventuel comme Cloudflare ou ngrok)
     ip = (
         request.headers.get("CF-Connecting-IP")
@@ -223,11 +256,26 @@ async def handle_tracer(request: web.Request) -> web.StreamResponse:
     )
     user_agent = request.headers.get("User-Agent", "Inconnu")
 
+    cand_links = get_candidate_links()
+
+    # Support des liens permanents directs : /t/portfolio, /t/linkedin, /t/github
+    if token in ("portfolio", "linkedin", "github"):
+        if not get_tracker(token):
+            create_cv_tracker(
+                token=token,
+                job_url="profil_permanent",
+                company="Lien Direct / Profil Public",
+                title=f"Profil {token.capitalize()}",
+                target_url=cand_links.get(token) or cand_links["portfolio"],
+                link_type=token,
+            )
+
     tracker = record_tracker_hit(token, ip=ip, user_agent=user_agent)
     if tracker:
         log.info(
-            "Hit traceur '%s' pour '%s' (%s) depuis %s (%s)",
+            "Hit traceur '%s' (%s) pour '%s' (%s) depuis %s (%s)",
             token,
+            tracker.get("link_type"),
             tracker.get("title"),
             tracker.get("company"),
             ip,
@@ -236,12 +284,12 @@ async def handle_tracer(request: web.Request) -> web.StreamResponse:
         bot = request.app.get(BOT_KEY)
         if bot:
             asyncio.create_task(_notify_owner(bot, tracker))
-        target = tracker.get("target_url") or get_default_target_url()
+        target = tracker.get("target_url") or cand_links.get(tracker.get("link_type")) or cand_links["portfolio"]
         raise web.HTTPFound(location=target)
 
     # Si token inconnu, redirection par défaut vers le portfolio
-    log.warning("Hit traceur avec token inconnu : '%s'", token)
-    raise web.HTTPFound(location=get_default_target_url())
+    log.warning("Hit traceur avec token inconnu : '%s'", raw_token)
+    raise web.HTTPFound(location=cand_links["portfolio"])
 
 
 async def handle_health(request: web.Request) -> web.Response:
