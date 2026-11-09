@@ -43,6 +43,9 @@ SKILL_LABELS = {
 # Types d'expériences classés comme « Expériences » (le reste = « Projets »).
 _PRO_TYPES = {"experience_pro", "challenge"}
 
+# Expériences obligatoires : le projet Airbus doit apparaître dans TOUS les CV sans exception.
+MANDATORY_EXP_IDS = ["etude-hydrogene-airbus"]
+
 
 # ---------------------------------------------------------------------------
 # Utilitaires
@@ -120,7 +123,10 @@ def _default_selection(exp_data: dict, offer: dict) -> dict:
                 s += 1
         scored.append((s, exp["id"]))
     scored.sort(key=lambda x: x[0], reverse=True)
-    ids = [i for _, i in scored[:7]]
+    # Le projet Airbus est obligatoire sans exception dans tous les CV
+    mandatory = [m for m in MANDATORY_EXP_IDS if any(e['id'] == m for e in exp_data['experiences'])]
+    other_ids = [i for _, i in scored if i not in MANDATORY_EXP_IDS]
+    ids = mandatory + other_ids[:6]
 
     # Ordre des compétences : catégories dont un terme apparaît dans l'offre d'abord.
     skills = exp_data["skills"]
@@ -189,7 +195,7 @@ def _llm_selection(offer: dict, exp_data: dict) -> dict | None:
     )
 
     system = (
-        "Tu aides à ADAPTER un CV à une offre de stage, en français. "
+        "Tu aides à ADAPTER un CV à une offre de stage, en français. RÈGLE ABSOLUE : le projet Airbus (etude-hydrogene-airbus) DOIT TOUJOURS être inclus dans selected_experience_ids. "
         "RÈGLE ABSOLUE : tu ne sélectionnes et n'ordonnes que des éléments RÉELS "
         "fournis ; tu n'inventes AUCUNE compétence, expérience, entreprise, ÉCOLE, "
         "ville d'études ni chiffre. L'école du candidat est TOUJOURS celle indiquée "
@@ -238,6 +244,9 @@ def _llm_selection(offer: dict, exp_data: dict) -> dict | None:
     # Complète avec les catégories manquantes pour ne rien perdre.
     order += [c for c in exp_data["skills"] if c not in order]
     profil = (data.get("profil") or "").strip() or _default_profil(exp_data, offer)
+    for mand in MANDATORY_EXP_IDS:
+        if mand in valid_ids and mand not in sel:
+            sel.append(mand)
     return {"profil": profil, "selected_experience_ids": sel[:7], "skills_order": order}
 
 
@@ -309,7 +318,12 @@ def _render_tex(exp_data: dict, selection: dict, offer: dict,
                 max_exp: int = 7, max_bullets: int = 2) -> str:
     cand = exp_data["candidate"]
     by_id = {e["id"]: e for e in exp_data["experiences"]}
-    selected = [by_id[i] for i in selection.get("selected_experience_ids", []) if i in by_id][:max_exp]
+    raw_sel = [by_id[i] for i in selection.get("selected_experience_ids", []) if i in by_id]
+    # RÈGLE ABSOLUE : Le projet Airbus doit apparaître dans tous les CV sans exception.
+    mandatory = [by_id[m] for m in MANDATORY_EXP_IDS if m in by_id]
+    others = [e for e in raw_sel if e["id"] not in MANDATORY_EXP_IDS]
+    budget_others = max(0, max_exp - len(mandatory))
+    selected = others[:budget_others] + mandatory
 
     projets = [e for e in selected if e.get("type") not in _PRO_TYPES]
     experiences = [e for e in selected if e.get("type") in _PRO_TYPES]
