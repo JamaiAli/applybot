@@ -107,6 +107,11 @@ exclude_titles:
   - "chief"
   - "clearance required"
 
+# Âge maximum (en jours) des offres présentées sur Telegram, TOUTES SOURCES
+# confondues (filtre sur la date de publication). Les offres sans date connue
+# sont conservées (affichées en fin de liste). 0 = pas de filtre d'âge.
+max_age_days: 30
+
 # ── France Travail (API officielle « Offres d'emploi v2 ») ──────────────────
 # Identifiants à créer sur https://francetravail.io puis à placer dans
 # ~/.applypilot/.env : FRANCE_TRAVAIL_CLIENT_ID / FRANCE_TRAVAIL_CLIENT_SECRET.
@@ -138,3 +143,85 @@ adzuna:
   max_pages: 3            # pages de results_per_page offres par requête
   results_per_page: 50
   include_alternance: true
+
+# ── Indeed (via le scraper local omkarcloud/indeed-scraper) ─────────────────
+# 2ᵉ source, au même niveau que HelloWork. On réutilise le package `indeed`
+# installé HORS du repo. AUCUN chemin en dur dans le code :
+#   - soit `scraper_path` ci-dessous,
+#   - soit la variable d'environnement INDEED_SCRAPER_PATH (ex. dans
+#     ~/.applypilot/.env : INDEED_SCRAPER_PATH=C:\Users\jamai\indeed-scraper).
+# Si le chemin/package manque ou qu'Indeed bloque, la source devient un no-op :
+# HelloWork continue normalement. Les offres Indeed sont pré-filtrées
+# « stage + bien cyber », taguées par domaine, puis scorées comme HelloWork.
+indeed:
+  enabled: true
+  scraper_path: ""          # vide → variable d'env INDEED_SCRAPER_PATH
+  location: "France"        # ex. "Paris", "Île-de-France", "Lyon"
+  pages: 1                  # pages par requête (20 offres/page). Monte avec prudence.
+  include_alternance: false # true = garder aussi les alternances
+  # max_age_days: 30        # (optionnel) surcharge le max_age_days global pour Indeed
+  delay_min: 1.5            # pause aléatoire entre requêtes (rythme lent anti-blocage)
+  delay_max: 3.5
+  # Requêtes par domaine. Défaut = jeu complet de cyber_stages.py.
+  # Peut aussi être une simple liste plate de requêtes.
+  queries:
+    "Généraliste cyber":
+      - "stage cybersécurité"
+      - "stagiaire cybersécurité"
+      - "stage sécurité informatique"
+      - "stage ingénieur sécurité"
+      - "cybersecurity internship"
+    "GRC":
+      - "stage GRC cybersécurité"
+      - "stage gouvernance risques conformité sécurité"
+      - "stage ISO 27001"
+      - "stage analyste risques cyber"
+      - "stage assistant RSSI"
+    "Pentest / Offensive":
+      - "stage pentest"
+      - "stage test d'intrusion"
+      - "stage auditeur sécurité"
+      - "stage red team"
+    "SOC / Blue team":
+      - "stage SOC"
+      - "stage analyste SOC"
+      - "stage CERT CSIRT"
+      - "stage SIEM"
+      - "stage threat intelligence"
+    "AD / IAM":
+      - "stage Active Directory"
+      - "stage IAM"
+      - "stage Entra ID"
+      - "stage gestion des identités et des accès"
+    "DevSecOps / Cloud":
+      - "stage DevSecOps"
+      - "stage DevOps"
+      - "stage sécurité cloud"
+      - "stage Kubernetes"
+    "AppSec":
+      - "stage sécurité applicative"
+      - "stage AppSec"
+    "Forensic / Malware":
+      - "stage forensic"
+      - "stage analyse malware"
+      - "stage reverse engineering"
+    "Réseau / Infra sécu":
+      - "stage sécurité réseau"
+      - "stage administrateur systèmes sécurité"
+    "Projet / Intégration":
+      - "stage chef de projet cybersécurité"
+      - "stage chef de projet intégration IT"
+
+# ── Jobs étudiants (Indeed) — commande Telegram /job ────────────────────────
+# Recherche LIVE (pas de base, pas de scoring) de jobs étudiants / week-end,
+# fusionnée avec HelloWork dans /job. Réutilise le chemin du scraper du bloc
+# `indeed` ci-dessus (ou INDEED_SCRAPER_PATH). Écarte stages/alternances et les
+# temps-plein qui ne sont ni week-end ni étudiant ni temps-partiel.
+indeed_student:
+  enabled: true
+  location: "Bourges (18)"   # /job <ville> surcharge ce défaut
+  pages: 1                   # pages par requête (20 offres/page)
+  weekend_only: false        # true = ne garder que les offres week-end
+  cher_only: false           # true = ne garder que le Cher (18)
+  sort: "date"               # date | pertinence (week-end/étudiant/temps partiel)
+  # queries: {catégorie: [requêtes]}   # défaut intégré (Général, Vente, Restauration, …)

@@ -63,38 +63,72 @@ _HEADERS = {
 
 
 def _parse_cards(html: str) -> list[dict]:
-    """Extrait les offres d'une page de résultats HelloWork."""
+    """Extrait les offres d'une page de résultats HelloWork.
+
+    Essaie plusieurs sélecteurs dans l'ordre pour résister aux changements
+    de structure HTML du site.
+    """
     soup = BeautifulSoup(html, "html.parser")
     jobs: list[dict] = []
     seen: set[str] = set()
-    for a in soup.select('a[data-cy="offerTitle"]'):
-        href = a.get("href") or ""
-        if not re.search(r"/emplois/\d+", href):
+
+    # Sélecteurs candidats, du plus spécifique au plus générique.
+    # HelloWork a changé data-cy="offerTitle" → on tente tous les patterns connus.
+    CANDIDATE_SELECTORS = [
+        'a[data-cy="offerTitle"]',           # ancien sélecteur stable
+        'a[data-testid="job-card-title"]',   # variante testid
+        'a[data-testid*="offer"]',
+        'li[data-cy*="offer"] a[href*="/emplois/"]',
+        'article a[href*="/emplois/"]',
+        'div[class*="offer"] a[href*="/emplois/"]',
+        'div[class*="job-card"] a[href*="/emplois/"]',
+        'a[href*="/emplois/"][class*="title"]',
+        # Fallback large : tout lien vers une offre
+        'a[href*="/emplois/"]',
+    ]
+
+    for selector in CANDIDATE_SELECTORS:
+        try:
+            anchors = soup.select(selector)
+        except Exception:
             continue
-        if href in seen:
+        if not anchors:
             continue
-        seen.add(href)
-        full = (a.get("title") or a.get_text(strip=True) or "").strip()
-        if " - " in full:
-            title, company = full.rsplit(" - ", 1)
-        else:
-            title, company = full, DEFAULT_SITE
-        aria = a.get("aria-label") or ""
-        location = aria.split(" à ", 1)[1].strip() if " à " in aria else None
-        url = href if href.startswith("http") else BASE + href
-        desc = (f"{title} chez {company}."
-                + (f" Lieu : {location}." if location else "")
-                + " Contrat : Stage.")
-        jobs.append({
-            "url": url,
-            "title": title.strip(),
-            "location": location,
-            "description": desc,
-            "full_description": None,   # le détail complet est sur la page offre
-            "application_url": url,
-            "employer_name": company.strip() or DEFAULT_SITE,
-            "posted_at": None,
-        })
+
+        for a in anchors:
+            href = a.get("href") or ""
+            if not re.search(r"/emplois/\d+", href):
+                continue
+            if href in seen:
+                continue
+            seen.add(href)
+            full = (a.get("title") or a.get_text(strip=True) or "").strip()
+            if " - " in full:
+                title, company = full.rsplit(" - ", 1)
+            else:
+                title, company = full, DEFAULT_SITE
+            aria = a.get("aria-label") or ""
+            location = aria.split(" à ", 1)[1].strip() if " à " in aria else None
+            url = href if href.startswith("http") else BASE + href
+            desc = (f"{title} chez {company}."
+                    + (f" Lieu : {location}." if location else "")
+                    + " Contrat : Stage.")
+            jobs.append({
+                "url": url,
+                "title": title.strip(),
+                "location": location,
+                "description": desc,
+                "full_description": None,   # le détail complet est sur la page offre
+                "application_url": url,
+                "employer_name": company.strip() or DEFAULT_SITE,
+                "posted_at": None,
+            })
+
+        if jobs:
+            # Un sélecteur a fonctionné → on s'arrête
+            log.debug("HelloWork _parse_cards : sélecteur %r → %d offres", selector, len(jobs))
+            break
+
     return jobs
 
 
@@ -173,6 +207,14 @@ def search_live(query: str = "", location: str = "", contract: str = "",
                 html = _fetch(client, query, contract, page, location)
                 cards = _parse_cards(html)
                 if not cards:
+                    # Diagnostic : logguer le début du HTML pour identifier si
+                    # HelloWork retourne un 200 vide, un captcha, ou a changé sa structure.
+                    snippet = html[:300].replace("\n", " ").strip()
+                    log.warning(
+                        "HelloWork search_live : 0 carte(s) trouvée(s) pour "
+                        "query=%r location=%r contract=%r page=%d. "
+                        "Début HTML : %s",
+                        query, location, contract, page, snippet)
                     break
                 for c in cards:
                     if c["url"] in seen:
@@ -194,14 +236,14 @@ def _insert_jobs(conn, jobs: list[dict]) -> tuple[int, int]:
 
 # ── Point d'entrée ─────────────────────────────────────────────────────────
 
-def run_hellowork_discovery(workers: int = 1) -> dict:
+def run_hellowork_discovery(workers: int = 1, queries: list[str] | None = None) -> dict:
     """Découvre des offres de STAGE via le scraping de HelloWork.
 
     No-op gracieux si le site bloque (403) ou renvoie du contenu vide.
     """
     config.load_env()
     cfg = (config.load_search_config() or {}).get("hellowork", {}) or {}
-    queries = cfg.get("queries") or _DEFAULT_QUERIES
+    queries = queries or cfg.get("queries") or _DEFAULT_QUERIES
     contract = str(cfg.get("contract", "Stage"))
     max_pages = int(cfg.get("max_pages", 2))
     delay = float(cfg.get("delay_seconds", 2.0))

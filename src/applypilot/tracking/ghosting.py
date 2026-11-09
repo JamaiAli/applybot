@@ -17,6 +17,7 @@ def detect_ghosted(
     applied_jobs: list[dict],
     ghosted_days: int = 7,
     conn: sqlite3.Connection | None = None,
+    ghosted_list: list[dict] | None = None,
 ) -> int:
     """Mark jobs as ghosted if they have no response after N days.
 
@@ -24,6 +25,7 @@ def detect_ghosted(
         applied_jobs: List of applied job dicts from get_applied_jobs().
         ghosted_days: Days after application before marking as ghosted.
         conn: Database connection.
+        ghosted_list: Optional list to append ghosted job dicts into.
 
     Returns:
         Number of jobs marked as ghosted.
@@ -68,6 +70,8 @@ def detect_ghosted(
         # Mark as ghosted
         if update_tracking_status(job["url"], "ghosted", conn):
             ghosted_count += 1
+            if ghosted_list is not None:
+                ghosted_list.append(dict(job))
             log.info("Marked as ghosted: %s (%s)", job.get("title", ""), job["url"][:60])
 
     return ghosted_count

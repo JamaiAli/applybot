@@ -57,7 +57,7 @@ def _setup_file_logging(stages: list[str]) -> logging.FileHandler | None:
 STAGE_ORDER = ("discover", "enrich", "score", "tailor", "cover", "pdf")
 
 STAGE_META: dict[str, dict] = {
-    "discover": {"desc": "Job discovery (JobSpy + Workday + smart extract + HN)"},
+    "discover": {"desc": "Job discovery (HelloWork + Indeed)"},
     "enrich":   {"desc": "Detail enrichment (full descriptions + apply URLs)"},
     "score":    {"desc": "LLM scoring (fit 1-10)"},
     "tailor":   {"desc": "Resume tailoring (LLM + validation)"},
@@ -83,38 +83,18 @@ _UPSTREAM: dict[str, str | None] = {
 
 # Canonical name → description. Order determines default execution order.
 DISCOVERY_SOURCES: dict[str, str] = {
-    "adzuna":       "Adzuna — agrégateur d'offres, API France (stages FR)",
     "hellowork":    "HelloWork — scraping de la recherche (stages FR)",
-    "francetravail": "France Travail — Offres d'emploi v2 API (stages FR)",
-    # LinkedIn disabled project-wide (ToS / ban risk) — see jobspy.py guard.
-    "jobspy":       "JobSpy aggregator (Indeed, etc. — LinkedIn disabled)",
-    "indeed":       "Indeed only (via JobSpy)",
-    "workday":      "Workday corporate career sites",
-    "greenhouse":   "Greenhouse ATS public board API",
-    "lever":        "Lever ATS public postings API",
-    "ashby":        "Ashby ATS public posting API",
-    "amazon":       "amazon.jobs public search API",
-    "costco":       "careers.costco.com public API (Issaquah HQ)",
-    "builtin":      "builtin.com (config-driven cities + categories)",
-    "smartextract": "Smart extract (AI-powered scraping, incl. Dice via sites.yaml)",
-    "hackernews":   "Hacker News 'Who is Hiring?' thread",
+    "indeed":       "Indeed — scraper local (stages cyber FR, filtré + tagué)",
 }
 
 # Alias → canonical name for CLI convenience
 _SOURCE_ALIASES: dict[str, str] = {
-    "hn":    "hackernews",
-    "smart": "smartextract",
-    "dice":  "smartextract",  # dice is scraped via smartextract + sites.yaml
-    "ft":            "francetravail",
-    "france_travail": "francetravail",
     "hw":            "hellowork",
+    "in":            "indeed",
 }
 
 # Sources that are jobspy with a specific site filter.
-# LinkedIn intentionally omitted: scraping it breaks LinkedIn's ToS (ban risk).
-_JOBSPY_SITE_SOURCES: dict[str, list[str]] = {
-    "indeed":   ["indeed"],
-}
+_JOBSPY_SITE_SOURCES: dict[str, list[str]] = {}
 
 
 def resolve_source_names(names: list[str]) -> list[str]:
@@ -137,174 +117,46 @@ def resolve_source_names(names: list[str]) -> list[str]:
 # Individual stage runners
 # ---------------------------------------------------------------------------
 
-def _run_discover(workers: int = 1, sources: list[str] | None = None) -> dict:
-    """Stage: Job discovery — JobSpy, Workday, smart-extract, and HN scrapers.
+def _run_discover(workers: int = 1, sources: list[str] | None = None,
+                  queries: dict[str, list[str]] | list[str] | None = None,
+                  location: str | None = None) -> dict:
+    """Stage: Job discovery — HelloWork scraper.
 
     Args:
-        workers: Thread count for sources that support parallelism.
+        workers: Thread count (unused, kept for API compat).
         sources: Canonical source names to run, or None for all.
     """
     run_all = sources is None
     active = list(DISCOVERY_SOURCES.keys()) if run_all else sources
     stats: dict = {s: None for s in active}
 
-    if "adzuna" in active:
-        console.print("  [cyan]Adzuna (API France)...[/cyan]")
-        try:
-            from applypilot.discovery.adzuna import run_adzuna_discovery
-            run_adzuna_discovery(workers=workers)
-            stats["adzuna"] = "ok"
-        except Exception as e:
-            log.error("Adzuna scraper failed: %s", e)
-            console.print(f"  [red]Adzuna error:[/red] {e}")
-            stats["adzuna"] = f"error: {e}"
-
     if "hellowork" in active:
         console.print("  [cyan]HelloWork (scraping recherche)...[/cyan]")
         try:
             from applypilot.discovery.hellowork import run_hellowork_discovery
-            run_hellowork_discovery(workers=workers)
+            hw_queries = None
+            if isinstance(queries, list):
+                hw_queries = queries
+            elif isinstance(queries, dict):
+                hw_queries = [q for ql in queries.values() for q in ql if isinstance(q, str)]
+            run_hellowork_discovery(workers=workers, queries=hw_queries)
             stats["hellowork"] = "ok"
         except Exception as e:
             log.error("HelloWork scraper failed: %s", e)
             console.print(f"  [red]HelloWork error:[/red] {e}")
             stats["hellowork"] = f"error: {e}"
 
-    if "francetravail" in active:
-        console.print("  [cyan]France Travail (Offres d'emploi v2)...[/cyan]")
+    if "indeed" in active:
+        console.print("  [cyan]Indeed (scraper local)...[/cyan]")
         try:
-            from applypilot.discovery.francetravail import run_francetravail_discovery
-            run_francetravail_discovery(workers=workers)
-            stats["francetravail"] = "ok"
+            from applypilot.discovery.indeed import run_indeed_discovery
+            run_indeed_discovery(workers=workers, queries=queries, location=location)
+            stats["indeed"] = "ok"
         except Exception as e:
-            log.error("France Travail scraper failed: %s", e)
-            console.print(f"  [red]France Travail error:[/red] {e}")
-            stats["francetravail"] = f"error: {e}"
-
-    if "jobspy" in active:
-        console.print("  [cyan]JobSpy full crawl...[/cyan]")
-        try:
-            from applypilot.discovery.jobspy import run_discovery
-            run_discovery()
-            stats["jobspy"] = "ok"
-        except Exception as e:
-            log.error("JobSpy crawl failed: %s", e)
-            console.print(f"  [red]JobSpy error:[/red] {e}")
-            stats["jobspy"] = f"error: {e}"
-
-    # Site-specific JobSpy sources (indeed)
-    for source_name, sites in _JOBSPY_SITE_SOURCES.items():
-        if source_name in active:
-            console.print(f"  [cyan]JobSpy ({source_name})...[/cyan]")
-            try:
-                from applypilot.discovery.jobspy import run_discovery
-                run_discovery(sites_override=sites)
-                stats[source_name] = "ok"
-            except Exception as e:
-                log.error("JobSpy (%s) crawl failed: %s", source_name, e)
-                console.print(f"  [red]JobSpy ({source_name}) error:[/red] {e}")
-                stats[source_name] = f"error: {e}"
-
-    if "workday" in active:
-        console.print("  [cyan]Workday corporate scraper...[/cyan]")
-        try:
-            from applypilot.discovery.workday import run_workday_discovery
-            run_workday_discovery(workers=workers)
-            stats["workday"] = "ok"
-        except Exception as e:
-            log.error("Workday scraper failed: %s", e)
-            console.print(f"  [red]Workday error:[/red] {e}")
-            stats["workday"] = f"error: {e}"
-
-    if "greenhouse" in active:
-        console.print("  [cyan]Greenhouse ATS scraper...[/cyan]")
-        try:
-            from applypilot.discovery.greenhouse import run_greenhouse_discovery
-            run_greenhouse_discovery(workers=workers)
-            stats["greenhouse"] = "ok"
-        except Exception as e:
-            log.error("Greenhouse scraper failed: %s", e)
-            console.print(f"  [red]Greenhouse error:[/red] {e}")
-            stats["greenhouse"] = f"error: {e}"
-
-    if "lever" in active:
-        console.print("  [cyan]Lever ATS scraper...[/cyan]")
-        try:
-            from applypilot.discovery.lever import run_lever_discovery
-            run_lever_discovery(workers=workers)
-            stats["lever"] = "ok"
-        except Exception as e:
-            log.error("Lever scraper failed: %s", e)
-            console.print(f"  [red]Lever error:[/red] {e}")
-            stats["lever"] = f"error: {e}"
-
-    if "ashby" in active:
-        console.print("  [cyan]Ashby ATS scraper...[/cyan]")
-        try:
-            from applypilot.discovery.ashby import run_ashby_discovery
-            run_ashby_discovery(workers=workers)
-            stats["ashby"] = "ok"
-        except Exception as e:
-            log.error("Ashby scraper failed: %s", e)
-            console.print(f"  [red]Ashby error:[/red] {e}")
-            stats["ashby"] = f"error: {e}"
-
-    if "amazon" in active:
-        console.print("  [cyan]Amazon.jobs scraper...[/cyan]")
-        try:
-            from applypilot.discovery.amazon import run_amazon_discovery
-            run_amazon_discovery(workers=workers)
-            stats["amazon"] = "ok"
-        except Exception as e:
-            log.error("Amazon scraper failed: %s", e)
-            console.print(f"  [red]Amazon error:[/red] {e}")
-            stats["amazon"] = f"error: {e}"
-
-    if "costco" in active:
-        console.print("  [cyan]Costco careers scraper...[/cyan]")
-        try:
-            from applypilot.discovery.costco import run_costco_discovery
-            run_costco_discovery(workers=workers)
-            stats["costco"] = "ok"
-        except Exception as e:
-            log.error("Costco scraper failed: %s", e)
-            console.print(f"  [red]Costco error:[/red] {e}")
-            stats["costco"] = f"error: {e}"
-
-    if "builtin" in active:
-        console.print("  [cyan]BuiltIn (builtin.com) scraper...[/cyan]")
-        try:
-            from applypilot.discovery.builtin import run_builtin_discovery
-            run_builtin_discovery(workers=workers)
-            stats["builtin"] = "ok"
-        except Exception as e:
-            log.error("BuiltIn scraper failed: %s", e)
-            console.print(f"  [red]BuiltIn error:[/red] {e}")
-            stats["builtin"] = f"error: {e}"
-
-    if "smartextract" in active:
-        console.print("  [cyan]Smart extract (AI-powered scraping)...[/cyan]")
-        try:
-            from applypilot.discovery.smartextract import run_smart_extract
-            run_smart_extract(workers=workers)
-            stats["smartextract"] = "ok"
-        except Exception as e:
-            log.error("Smart extract failed: %s", e)
-            console.print(f"  [red]Smart extract error:[/red] {e}")
-            stats["smartextract"] = f"error: {e}"
-
-    if "hackernews" in active:
-        console.print("  [cyan]Hacker News 'Who is Hiring?' thread...[/cyan]")
-        try:
-            from applypilot.discovery.hackernews import run_hn_discovery
-            hn_result = run_hn_discovery()
-            new = hn_result.get("new", 0)
-            console.print(f"  [dim]HN: {new} new jobs from '{hn_result.get('thread_title', '?')}'[/dim]")
-            stats["hackernews"] = "ok"
-        except Exception as e:
-            log.error("HN discovery failed: %s", e)
-            console.print(f"  [red]HN error:[/red] {e}")
-            stats["hackernews"] = f"error: {e}"
+            # Une erreur Indeed ne casse jamais HelloWork : on log et on continue.
+            log.error("Indeed scraper failed: %s", e)
+            console.print(f"  [red]Indeed error:[/red] {e}")
+            stats["indeed"] = f"error: {e}"
 
     return stats
 

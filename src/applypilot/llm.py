@@ -151,8 +151,8 @@ def _detect_provider(quality: bool = False) -> tuple[str, str, str]:
 # Client
 # ---------------------------------------------------------------------------
 
-_MAX_RETRIES = 3
-_TIMEOUT = 300  # seconds
+_MAX_RETRIES = 2
+_TIMEOUT = 15  # seconds
 
 
 class LLMClient:
@@ -228,9 +228,14 @@ class LLMClient:
         # DeepSeek deepseek-chat has an 8192 max output token limit
         if entry.provider == "deepseek":
             max_tokens = min(max_tokens, 8192)
+        call_messages = list(messages)
+        if "qwen" in entry.name.lower() and call_messages:
+            first = call_messages[0]
+            if first.get("role") == "user" and not str(first.get("content", "")).startswith("/no_think"):
+                call_messages = [{"role": first["role"], "content": f"/no_think\n{first['content']}"}] + call_messages[1:]
         payload = {
             "model": entry.name,
-            "messages": messages,
+            "messages": call_messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
@@ -309,8 +314,11 @@ class LLMClient:
                         f"Malformed response from {entry.provider}/{entry.name}: "
                         f"no choices in {type(data).__name__}"
                     )
-                text = data["choices"][0]["message"]["content"]
-                if text is None:
+                msg = data["choices"][0]["message"]
+                text = msg.get("content") or ""
+                if not text.strip() and msg.get("reasoning"):
+                    text = msg["reasoning"].strip()
+                if not text:
                     # Model returned null content (refusal, tool_call, etc.)
                     if not is_last:
                         log.warning("%s/%s: null content in response, trying next",

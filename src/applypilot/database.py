@@ -264,6 +264,24 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_qa_key ON qa_knowledge(question_key)"
     )
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS cv_trackers (
+            token           TEXT PRIMARY KEY,
+            job_url         TEXT,
+            company         TEXT,
+            title           TEXT,
+            target_url      TEXT NOT NULL,
+            created_at      TEXT NOT NULL,
+            opened_at       TEXT,
+            last_opened_at  TEXT,
+            open_count      INTEGER DEFAULT 0,
+            user_agent      TEXT,
+            ip              TEXT
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_cv_trackers_job_url ON cv_trackers(job_url)"
+    )
     commit_with_retry(conn)
 
     # Run migrations for any columns added after initial schema
@@ -297,6 +315,10 @@ _ALL_COLUMNS: dict[str, str] = {
     "state": "TEXT DEFAULT 'discovered'",
     # Company
     "company": "TEXT",
+    # Source de découverte (hellowork | indeed | …) + domaines cyber (liste JSON).
+    # Additif : les offres existantes et HelloWork restent inchangées (NULL possible).
+    "source": "TEXT",
+    "domaines": "TEXT",
     # Enrichment
     "full_description": "TEXT",
     "application_url": "TEXT",
@@ -1937,6 +1959,34 @@ def get_tracking_emails(job_url: str, conn: sqlite3.Connection | None = None) ->
     return []
 
 
+def get_classified_emails(
+    classification: str,
+    limit: int = 25,
+    conn: sqlite3.Connection | None = None,
+) -> list[dict]:
+    """Get tracking emails with a specific classification (e.g. 'confirmation', 'rejection')."""
+    if conn is None:
+        conn = get_connection()
+    rows = conn.execute(
+        """
+        SELECT t.email_id, t.thread_id, t.job_url, t.sender, t.sender_name,
+               t.subject, t.received_at, t.snippet, t.classification,
+               t.extracted_data, t.classified_at,
+               j.company, j.title
+        FROM tracking_emails t
+        LEFT JOIN jobs j ON t.job_url = j.url
+        WHERE t.classification = ?
+        ORDER BY t.rowid DESC
+        LIMIT ?
+        """,
+        (classification, limit),
+    ).fetchall()
+    if rows:
+        columns = rows[0].keys()
+        return [dict(zip(columns, row)) for row in rows]
+    return []
+
+
 def get_tracking_people(job_url: str, conn: sqlite3.Connection | None = None) -> list[dict]:
     """Get all tracking contacts for a job."""
     if conn is None:
@@ -2226,3 +2276,110 @@ def export_qa_yaml(conn: sqlite3.Connection | None = None) -> str:
         lines.append(f"    - text: \"{qa['answer_text']}\"{outcome_tag}")
     lines.append("")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# CV Trackers (JobNavigator Feature: Read receipts / redirection)
+# ---------------------------------------------------------------------------
+def create_cv_tracker(
+    token: str,
+    job_url: str,
+    company: str,
+    title: str,
+    target_url: str,
+    conn: sqlite3.Connection | None = None,
+) -> None:
+    """Enregistre un nouveau token de tracking pour un CV adapté."""
+    c = conn or get_connection()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    c.execute(
+        """
+        INSERT OR REPLACE INTO cv_trackers
+            (token, job_url, company, title, target_url, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (token, job_url, company, title, target_url, now_iso),
+    )
+    commit_with_retry(c)
+
+
+def get_tracker(token: str, conn: sqlite3.Connection | None = None) -> dict | None:
+    """Récupère les informations d'un traceur par son token."""
+    c = conn or get_connection()
+    c.row_factory = sqlite3.Row
+    row = c.execute("SELECT * FROM cv_trackers WHERE token = ?", (token,)).fetchone()
+    return dict(row) if row else None
+
+
+def get_tracker_by_job_url(job_url: str, conn: sqlite3.Connection | None = None) -> dict | None:
+    """Récupère un traceur déjà existant pour une offre donnée."""
+    c = conn or get_connection()
+    c.row_factory = sqlite3.Row
+    row = c.execute(
+        "SELECT * FROM cv_trackers WHERE job_url = ? ORDER BY created_at DESC LIMIT 1",
+        (job_url,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def record_tracker_hit(
+    token: str,
+    ip: str,
+    user_agent: str,
+    conn: sqlite3.Connection | None = None,
+) -> dict | None:
+    """Enregistre une consultation (clic recruteur) et renvoie le traceur mis à jour."""
+    c = conn or get_connection()
+    c.row_factory = sqlite3.Row
+    now_iso = datetime.now(timezone.utc).isoformat()
+    row = c.execute("SELECT * FROM cv_trackers WHERE token = ?", (token,)).fetchone()
+    if not row:
+        return None
+
+    first_open = row["opened_at"] or now_iso
+    open_count = (row["open_count"] or 0) + 1
+
+    c.execute(
+        """
+        UPDATE cv_trackers
+        SET opened_at = ?,
+            last_opened_at = ?,
+            open_count = ?,
+            ip = ?,
+            user_agent = ?
+        WHERE token = ?
+        """,
+        (first_open, now_iso, open_count, ip, user_agent, token),
+    )
+    commit_with_retry(c)
+    updated = c.execute("SELECT * FROM cv_trackers WHERE token = ?", (token,)).fetchone()
+    return dict(updated) if updated else None
+
+
+def get_recent_trackers(limit: int = 15, conn: sqlite3.Connection | None = None) -> list[dict]:
+    """Liste les traceurs récents, en priorisant ceux ayant eu des consultations."""
+    c = conn or get_connection()
+    c.row_factory = sqlite3.Row
+    rows = c.execute(
+        """
+        SELECT * FROM cv_trackers
+        ORDER BY (open_count > 0) DESC, last_opened_at DESC, created_at DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_tracker_stats(conn: sqlite3.Connection | None = None) -> dict:
+    """Statistiques globales des traceurs."""
+    c = conn or get_connection()
+    total_trackers = c.execute("SELECT COUNT(*) FROM cv_trackers").fetchone()[0]
+    opened_trackers = c.execute("SELECT COUNT(*) FROM cv_trackers WHERE open_count > 0").fetchone()[0]
+    total_opens = c.execute("SELECT COALESCE(SUM(open_count), 0) FROM cv_trackers").fetchone()[0]
+    return {
+        "total_trackers": total_trackers,
+        "opened_trackers": opened_trackers,
+        "total_opens": total_opens,
+    }
+

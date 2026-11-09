@@ -73,8 +73,16 @@ def set_proxy(proxy_str: str | None):
     """Set proxy config from an external caller."""
     global _PROXY_CONFIG
     if proxy_str:
-        from applypilot.discovery.jobspy import parse_proxy
-        _PROXY_CONFIG = parse_proxy(proxy_str)
+        parts = proxy_str.split(":")
+        if len(parts) == 4:
+            host, port, user, passwd = parts
+            _PROXY_CONFIG = {
+                "server": f"http://{host}:{port}",
+                "username": user,
+                "password": passwd,
+            }
+        elif len(parts) == 2:
+            _PROXY_CONFIG = {"server": f"http://{proxy_str}"}
 
 
 # -- URL resolution ----------------------------------------------------------

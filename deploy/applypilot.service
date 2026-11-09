@@ -1,0 +1,18 @@
+[Unit]
+Description=ApplyPilot Telegram Bot & Job Automation Daemon
+After=network.target
+
+[Service]
+Type=simple
+# Remplace 'ubuntu' par ton nom d'utilisateur sur le VPS si différent
+User=ubuntu
+WorkingDirectory=/home/ubuntu/applypilot-fr
+ExecStart=/home/ubuntu/applypilot-fr/.venv/bin/python -m applypilot.telegram_bot
+Restart=always
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

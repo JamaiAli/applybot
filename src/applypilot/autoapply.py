@@ -19,7 +19,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -39,7 +42,34 @@ _CAPTCHA_HOST_RE = re.compile(r"(recaptcha|hcaptcha|turnstile|captcha)", re.I)
 
 
 def _profile() -> dict:
-    return json.loads((config.APP_DIR / "profile.json").read_text(encoding="utf-8"))
+    prof_path = config.APP_DIR / "profile.json"
+    if prof_path.exists():
+        try:
+            return json.loads(prof_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    exp_path = config.APP_DIR / "experiences.json"
+    if exp_path.exists():
+        try:
+            data = json.loads(exp_path.read_text(encoding="utf-8"))
+            cand = data.get("candidate", {})
+            full = cand.get("full_name", "")
+            return {
+                "personal": {
+                    "full_name": full,
+                    "preferred_name": full.split()[0] if full else "",
+                    "email": cand.get("email", ""),
+                    "phone": cand.get("phone", ""),
+                    "city": cand.get("location", "").split()[0] if cand.get("location") else "",
+                    "postal_code": "18000",
+                    "linkedin_url": cand.get("linkedin", ""),
+                    "github_url": cand.get("github", ""),
+                    "portfolio_url": cand.get("portfolio", ""),
+                }
+            }
+        except Exception:
+            pass
+    return {}
 
 
 def _qa_knowledge() -> dict:
@@ -224,6 +254,45 @@ _JS_LABELS = r"""
 """
 
 
+# JS : injection native pour les frameworks dynamiques (React, Angular, Vue).
+# Invoque le setter natif du DOM et réinitialise _valueTracker pour éviter
+# que React ne remette le champ à blanc lors du passage à l'étape suivante.
+_JS_NATIVE_SET = r"""
+(el, value) => {
+  if (!el || value === undefined || value === null) return false;
+  try {
+    el.focus();
+    if (el.isContentEditable) {
+      el.innerText = value;
+      el.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+      return true;
+    }
+    const proto = el instanceof HTMLTextAreaElement ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+    const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+    if (desc && desc.set) {
+      desc.set.call(el, value);
+    } else {
+      el.value = value;
+    }
+    const tracker = el._valueTracker;
+    if (tracker) {
+      tracker.setValue('');
+    }
+    try {
+      el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertText', data: value }));
+    } catch (_e) {
+      el.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+    }
+    el.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+    el.dispatchEvent(new Event('blur', { bubbles: true, cancelable: true }));
+    return true;
+  } catch (_e) {
+    return false;
+  }
+}
+"""
+
+
 def _fill_known_fields(page, p: dict) -> int:
     """Remplit les champs connus restés vides en s'appuyant sur leur LIBELLÉ
     (question affichée) et non seulement sur les attributs. Renvoie le nb rempli."""
@@ -249,7 +318,10 @@ def _fill_known_fields(page, p: dict) -> int:
                 continue  # ne pas écraser
             for pat, val in pairs:
                 if pat.search(label):
-                    el.fill(val, timeout=3000)
+                    try:
+                        el.evaluate(_JS_NATIVE_SET, val)
+                    except Exception:
+                        el.fill(val, timeout=3000)
                     filled += 1
                     break
         except Exception:
@@ -393,7 +465,10 @@ def _smart_fill(page, offer: dict, p: dict, seen: set) -> int:
             elif f["kind"] == "textarea":
                 ta = textareas.nth(f["nth"])
                 if not (ta.input_value() or "").strip():
-                    ta.fill(val, timeout=3000)
+                    try:
+                        ta.evaluate(_JS_NATIVE_SET, val)
+                    except Exception:
+                        ta.fill(val, timeout=3000)
                     done += 1
             elif f["kind"] == "radio":
                 # Trouve l'option (libellé) choisie -> clique le radio correspondant.
@@ -625,29 +700,366 @@ def _set_button_label(page, text: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+def _find_real_chrome() -> str | None:
+    """Trouve le chemin de Chrome (ou Edge) installé sur le système.
+
+    Retourne le chemin de l'exécutable ou None si introuvable.
+    Cherche dans les emplacements standards Windows.
+    """
+    candidates = [
+        # Chrome standard
+        os.path.join(os.environ.get("PROGRAMFILES", "C:\\Program Files"),
+                     "Google", "Chrome", "Application", "chrome.exe"),
+        os.path.join(os.environ.get("PROGRAMFILES(X86)", "C:\\Program Files (x86)"),
+                     "Google", "Chrome", "Application", "chrome.exe"),
+        os.path.join(os.environ.get("LOCALAPPDATA", ""),
+                     "Google", "Chrome", "Application", "chrome.exe"),
+        # Edge (fallback)
+        os.path.join(os.environ.get("PROGRAMFILES", "C:\\Program Files"),
+                     "Microsoft", "Edge", "Application", "msedge.exe"),
+        os.path.join(os.environ.get("PROGRAMFILES(X86)", "C:\\Program Files (x86)"),
+                     "Microsoft", "Edge", "Application", "msedge.exe"),
+    ]
+    for c in candidates:
+        if c and os.path.isfile(c):
+            return c
+    return None
+
+
+def open_in_real_browser(url: str) -> bool:
+    """Ouvre une URL dans le vrai Chrome/Edge installé — ZÉRO signal automation.
+
+    Contrairement à Playwright, le vrai Chrome n'a pas de flag --no-sandbox ni
+    de TLS fingerprint Chromium : Cloudflare/Indeed ne peuvent pas le détecter.
+
+    Utilise le profil utilisateur normal de Chrome (cookies existants, sessions
+    Indeed actives) → aucun CAPTCHA sur une URL Indeed si l'utilisateur a déjà
+    un compte connecté.
+
+    Retourne True si le navigateur a été ouvert avec succès.
+    """
+    chrome_exe = _find_real_chrome()
+    if chrome_exe:
+        try:
+            subprocess.Popen([chrome_exe, url],
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+            log.info("Navigateur réel ouvert : %s → %s", chrome_exe, url[:80])
+            return True
+        except Exception as exc:
+            log.warning("Échec ouverture Chrome réel (%s) : %s", chrome_exe, exc)
+
+    # Fallback Windows : commande 'start' (ouvre le navigateur par défaut)
+    try:
+        subprocess.Popen(["cmd", "/c", "start", "", url],
+                         stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL)
+        log.info("Navigateur par défaut ouvert (start) : %s", url[:80])
+        return True
+    except Exception as exc:
+        log.warning("Échec ouverture navigateur par défaut : %s", exc)
+
+    return False
+
+
+def _apply_via_cdp(offer: dict, cv_path: str | None,
+                   keep_open_seconds: int = 900) -> dict:
+    """Stratégie CDP pour Indeed/Cloudflare : vrai Chrome + auto-complétion.
+
+    Flux :
+      1. Lance le vrai Chrome installé avec --remote-debugging-port=9222.
+         → Cloudflare voit un vrai Chrome, zéro flag d'automation visible.
+      2. Attend que Chrome charge la page (3 s).
+      3. Playwright se branche via CDP (connect_over_cdp) sur le Chrome déjà
+         ouvert — les sites ne voient pas cette connexion CDP.
+      4. Remplit les champs connus + upload CV, puis laisse la fenêtre ouverte.
+
+    Si Chrome est introuvable ou si le CDP échoue, repli sur ouverture simple
+    (sans auto-complétion).
+    """
+    import socket
+    target_url = offer.get("application_url") or offer.get("url") or ""
+    CDP_PORT = 9222
+
+    # 1. Trouver Chrome et le lancer avec le port de debug
+    chrome_exe = _find_real_chrome()
+    if not chrome_exe:
+        log.warning("CDP : Chrome introuvable, repli sur ouverture simple")
+        open_in_real_browser(target_url)
+        return {"status": "real_browser", "url": target_url,
+                "message": "✅ Offre ouverte dans le navigateur (Chrome introuvable, "
+                           "auto-complétion indisponible — remplis à la main).",
+                "screenshot": None}
+
+    # Vérifier si un Chrome avec CDP est déjà ouvert sur ce port
+    _cdp_already_open = False
+    try:
+        s = socket.create_connection(("127.0.0.1", CDP_PORT), timeout=0.5)
+        s.close()
+        _cdp_already_open = True
+        log.debug("CDP : port %d déjà ouvert (Chrome existant)", CDP_PORT)
+    except OSError:
+        pass
+
+    chrome_proc = None
+    if not _cdp_already_open:
+        chrome_args = [
+            chrome_exe,
+            f"--remote-debugging-port={CDP_PORT}",
+            "--no-first-run",
+            "--no-default-browser-check",
+            target_url,
+        ]
+        try:
+            chrome_proc = subprocess.Popen(
+                chrome_args,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            log.info("CDP : Chrome lancé (PID %d) sur port %d", chrome_proc.pid, CDP_PORT)
+        except Exception as exc:
+            log.warning("CDP : impossible de lancer Chrome : %s — repli simple", exc)
+            open_in_real_browser(target_url)
+            return {"status": "real_browser", "url": target_url,
+                    "message": "✅ Offre ouverte (CDP échoué, remplis à la main).",
+                    "screenshot": None}
+
+        # Attendre que Chrome démarre et que le port soit disponible
+        for _ in range(20):   # max 10 s
+            time.sleep(0.5)
+            try:
+                s = socket.create_connection(("127.0.0.1", CDP_PORT), timeout=0.3)
+                s.close()
+                break
+            except OSError:
+                continue
+        else:
+            log.warning("CDP : port %d toujours fermé après 10 s — repli simple", CDP_PORT)
+            open_in_real_browser(target_url)
+            return {"status": "real_browser", "url": target_url,
+                    "message": "✅ Offre ouverte (CDP timeout, remplis à la main).",
+                    "screenshot": None}
+
+    # Si le Chrome était déjà ouvert, naviguer vers l'URL dans un nouvel onglet
+    if _cdp_already_open:
+        subprocess.Popen(
+            [chrome_exe, f"--remote-debugging-port={CDP_PORT}", target_url],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(2)
+
+    # 2. Connexion CDP via Playwright
+    try:
+        from playwright.sync_api import sync_playwright as _pl_sync  # noqa: PLC0415
+    except ImportError:
+        log.warning("CDP : Playwright indisponible — repli simple")
+        return {"status": "real_browser", "url": target_url,
+                "message": "✅ Offre ouverte (Playwright absent, remplis à la main).",
+                "screenshot": None}
+
+    result: dict = {"status": "ready", "url": target_url,
+                    "message": "", "screenshot": None}
+
+    with _pl_sync() as pw:
+        try:
+            browser = pw.chromium.connect_over_cdp(f"http://127.0.0.1:{CDP_PORT}")
+        except Exception as exc:
+            log.warning("CDP connect_over_cdp échoué : %s", exc)
+            return {"status": "real_browser", "url": target_url,
+                    "message": "✅ Offre ouverte (connexion CDP échouée, remplis à la main).",
+                    "screenshot": None}
+
+        try:
+            # Prendre le dernier onglet (celui qu'on vient d'ouvrir)
+            ctx = browser.contexts[0] if browser.contexts else None
+            if ctx is None:
+                raise RuntimeError("Aucun contexte CDP")
+            page = ctx.pages[-1] if ctx.pages else ctx.new_page()
+
+            # Attendre que la page Indeed soit chargée (pas de Cloudflare block)
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=20000)
+                page.wait_for_load_state("networkidle", timeout=10000)
+            except Exception:
+                pass  # on continue même si timeout
+
+            # Naviguer si on n'est pas encore sur la bonne URL
+            if target_url not in (page.url or ""):
+                try:
+                    page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+                    page.wait_for_load_state("networkidle", timeout=10000)
+                except Exception:
+                    pass
+
+            # Vérifier si on est bloqué par Cloudflare malgré tout
+            if "vérification" in (page.title() or "").lower() or \
+               "checking" in (page.url or "").lower():
+                result.update(
+                    status="needs_captcha",
+                    message="⚠️ Cloudflare demande une vérification. Clique la case "
+                            "« Je ne suis pas un robot », puis clique "
+                            "« 📝 Compléter le formulaire ».")
+            else:
+                # Essayer d'aller au formulaire
+                if not _form_present(page):
+                    _trigger_apply(page)
+                result.update(status="ready",
+                               url=page.url,
+                               message="Formulaire Indeed ouvert — clique "
+                                       "« 📝 Compléter le formulaire » en haut.")
+
+            # Injecter le bouton flottant « Compléter »
+            try:
+                page.evaluate(_FILL_BUTTON_JS)
+            except Exception:
+                pass
+
+            # Boucle d'attente : remplit au clic du bouton
+            prof = _profile()
+            smart_seen: set = set()
+            waited = 0.0
+            while waited < keep_open_seconds:
+                try:
+                    time.sleep(1.5)
+                    waited += 1.5
+                    opened_pages = [pg for pg in ctx.pages if not pg.is_closed()]
+                    if not opened_pages:
+                        break
+                    cur = opened_pages[-1]
+                    try:
+                        cur.evaluate(_FILL_BUTTON_JS)  # (ré)injecter si nouvel onglet
+                    except Exception:
+                        continue
+                    try:
+                        ts = cur.evaluate(
+                            "(window.__ap_fill_ts||0) > (window.__ap_fill_done||0)"
+                            " ? window.__ap_fill_ts : 0")
+                    except Exception:
+                        ts = 0
+                    if not ts:
+                        continue
+                    try:
+                        cur.evaluate("window.__ap_fill_done = window.__ap_fill_ts")
+                    except Exception:
+                        pass
+                    if _has_captcha(cur):
+                        _set_button_label(cur, "🧩 CAPTCHA : résous-le, puis reclique")
+                        continue
+                    if _looks_like_login(cur.url, cur):
+                        _set_button_label(cur, "🔒 Connecte-toi, puis reclique")
+                        continue
+                    if not _form_present(cur):
+                        _trigger_apply(cur)
+                    n = _fill_known_fields(cur, prof)
+                    n += _fill_selects(cur)
+                    n += _smart_fill(cur, offer, prof, smart_seen)
+                    up = bool(cv_path) and _upload_cv(cur, cv_path)
+                    _set_button_label(
+                        cur,
+                        f"✅ {n} champ(s) rempli(s){' + CV' if up else ''} — vérifie et envoie")
+                except Exception:
+                    continue
+        except Exception as exc:
+            log.exception("CDP flow échoué : %s", exc)
+            result = {"status": "error", "url": target_url,
+                      "message": str(exc), "screenshot": None}
+        finally:
+            try:
+                browser.close()  # ferme la connexion CDP, PAS le navigateur
+            except Exception:
+                pass
+
+    return result
+
+
 def apply_to_offer(offer: dict, cv_path: str | None = None,
                    headless: bool = False, keep_open_seconds: int = 900) -> dict:
-    """Ouvre l'offre dans un navigateur VISIBLE (profil persistant), pré-remplit
-    le formulaire et joint le CV, puis GARDE la fenêtre ouverte pour que tu
-    vérifies, téléverses si besoin et cliques Postuler TOI-MÊME.
+    """Ouvre l'offre dans un navigateur VISIBLE et pré-remplit le formulaire.
 
-    Ne soumet jamais et s'arrête sur connexion/CAPTCHA (règles d'Ali).
-    Renvoie {status, url, message, screenshot}.
+    Stratégie selon la source de l'offre :
+
+    • **Indeed / Cloudflare** → stratégie CDP : lance le VRAI Chrome installé
+      avec --remote-debugging-port, puis Playwright se branche via CDP.
+      Cloudflare voit un vrai Chrome (pas de --no-sandbox, pas de TLS fingerprint
+      Playwright). Le bouton « 📝 Compléter » remplit les champs + upload CV.
+
+    • **Autres sources** → Patchright (stealth TLS) ou Playwright en fallback,
+      avec pré-remplissage automatique des champs et upload du CV.
+
+    Ne soumet jamais. Renvoie {status, url, message, screenshot}.
     """
+    target_url = offer.get("application_url") or offer.get("url") or ""
+
+    # --- Détection Indeed / Cloudflare : navigateur réel uniquement -----------
+    _REAL_BROWSER_HOSTS = ("indeed.com", "indeed.fr", "fr.indeed.com",
+                           "cloudflare.com")
+    is_indeed = any(h in target_url for h in _REAL_BROWSER_HOSTS)
+
+    if is_indeed:
+        log.info("Indeed détecté → stratégie CDP (vrai Chrome + remplissage auto)")
+        return _apply_via_cdp(offer, cv_path, keep_open_seconds)
+
+    # --- Autres sources : Patchright / Playwright avec pré-remplissage --------
+    # --- Choix du moteur : Patchright > Playwright standard -------------------
+    _pw_module = None
+    _use_patchright = False
     try:
-        from playwright.sync_api import sync_playwright
-    except Exception as exc:  # pragma: no cover
-        return {"status": "error", "message": f"Playwright indisponible : {exc}"}
+        from patchright.sync_api import sync_playwright as _pr_sync  # noqa: PLC0415
+        _pw_module = _pr_sync
+        _use_patchright = True
+        log.debug("apply_to_offer : moteur Patchright (stealth TLS)")
+    except ImportError:
+        try:
+            from playwright.sync_api import sync_playwright as _pl_sync  # noqa: PLC0415
+            _pw_module = _pl_sync
+            log.debug("apply_to_offer : moteur Playwright standard (Patchright absent)")
+        except Exception as exc:  # pragma: no cover
+            return {"status": "error", "message": f"Playwright/Patchright indisponible : {exc}"}
 
     BROWSER_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
 
-    with sync_playwright() as pw:
-        ctx = pw.chromium.launch_persistent_context(
-            user_data_dir=str(BROWSER_PROFILE_DIR),
-            headless=headless,
-            locale="fr-FR",
-            args=["--disable-blink-features=AutomationControlled"],
-        )
+    # Arguments de lancement communs (anti-détection + UX)
+    _LAUNCH_ARGS = [
+        "--disable-blink-features=AutomationControlled",
+        "--disable-infobars",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-extensions-except=",
+        "--start-maximized",
+    ]
+
+    # Avec Patchright, on peut passer channel="chrome" pour utiliser Chrome
+    # installé (fingerprint encore plus naturel). On tente, on replie sur chromium.
+    _CHANNEL = "chrome"
+
+    with _pw_module() as pw:
+        # Essai avec Chrome installé (meilleur fingerprint) puis Chromium intégré
+        ctx = None
+        for channel in ([_CHANNEL, None] if _use_patchright else [None]):
+            try:
+                kw: dict = dict(
+                    user_data_dir=str(BROWSER_PROFILE_DIR),
+                    headless=headless,
+                    locale="fr-FR",
+                    args=_LAUNCH_ARGS,
+                )
+                if channel:
+                    kw["channel"] = channel
+                ctx = pw.chromium.launch_persistent_context(**kw)
+                break
+            except Exception as e:
+                log.debug("apply_to_offer : channel=%r échoué (%s), essai suivant", channel, e)
+                ctx = None
+
+        if ctx is None:
+            return {"status": "error",
+                    "message": "Impossible de lancer le navigateur (Chrome/Chromium)."}
+
+        # Script stealth identique à celui du scraper (masque webdriver, plugins…)
+        from applypilot.enrichment.detail import _STEALTH_INIT_SCRIPT  # noqa: PLC0415
+        try:
+            ctx.add_init_script(_STEALTH_INIT_SCRIPT)
+        except Exception:
+            pass  # certaines versions de Patchright patchent déjà nativement
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         try:
             result = _run_flow(page, offer, cv_path)

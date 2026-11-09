@@ -31,6 +31,13 @@ from applypilot.database import get_connection, init_db, write_with_retry
 
 log = logging.getLogger(__name__)
 
+# Déduit la colonne `source` de la stratégie du scraper, sans toucher aux
+# adaptateurs eux-mêmes. Un job peut aussi fournir `source` explicitement.
+_STRATEGY_SOURCE: dict[str, str] = {
+    "hellowork_scrape": "hellowork",
+    "indeed_scrape": "indeed",
+}
+
 
 _HEADERS = {
     "User-Agent": "ApplyPilot/1.0 (job-discovery)",
@@ -108,16 +115,21 @@ def insert_normalized_jobs(
             detail_scraped_at = now if full_description else None
             site = job.get("employer_name", default_site)
             initial_state = "enriched" if full_description else "discovered"
+            source = job.get("source") or _STRATEGY_SOURCE.get(strategy)
+            domaines = job.get("domaines")
+            domaines_json = (json.dumps(domaines, ensure_ascii=False)
+                             if domaines else None)
             try:
                 conn.execute(
                     "INSERT INTO jobs (url, title, salary, description, location, site, strategy, "
                     "discovered_at, posted_at, full_description, application_url, "
-                    "detail_scraped_at, state) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "detail_scraped_at, state, source, domaines) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (url, job.get("title"), None, job.get("description"),
                      job.get("location"), site, strategy, now,
                      job.get("posted_at"), full_description,
-                     job.get("application_url"), detail_scraped_at, initial_state),
+                     job.get("application_url"), detail_scraped_at, initial_state,
+                     source, domaines_json),
                 )
                 conn.execute(
                     "INSERT INTO job_state_transitions "

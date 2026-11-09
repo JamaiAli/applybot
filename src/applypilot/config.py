@@ -62,6 +62,11 @@ FILES_DIR = APP_DIR / "files"
 PACKAGE_DIR = Path(__file__).parent
 CONFIG_DIR = PACKAGE_DIR / "config"
 
+# CV Tracer Links (JobNavigator Feature: Read receipts / redirection)
+TRACER_PORT = int(os.environ.get("TRACER_PORT", "8765"))
+TRACER_HOST = os.environ.get("TRACER_HOST", "0.0.0.0")
+TRACER_BASE_URL = os.environ.get("TRACER_BASE_URL", f"http://localhost:{TRACER_PORT}").rstrip("/")
+
 
 def get_chrome_path() -> str:
     """Auto-detect Chrome/Chromium executable path, cross-platform.
@@ -265,7 +270,7 @@ def get_tier() -> int:
     """
     load_env()
 
-    has_llm = any(os.environ.get(k) for k in ("GEMINI_API_KEY", "OPENAI_API_KEY", "LLM_URL"))
+    has_llm = any(os.environ.get(k) for k in ("GEMINI_API_KEY", "OPENAI_API_KEY", "LLM_URL", "GROQ_API_KEY"))
     if not has_llm:
         return 1
 
@@ -297,7 +302,7 @@ def check_tier(required: int, feature: str) -> None:
     _console = Console(stderr=True)
 
     missing: list[str] = []
-    if required >= 2 and not any(os.environ.get(k) for k in ("GEMINI_API_KEY", "OPENAI_API_KEY", "LLM_URL")):
+    if required >= 2 and not any(os.environ.get(k) for k in ("GEMINI_API_KEY", "OPENAI_API_KEY", "LLM_URL", "GROQ_API_KEY")):
         missing.append("LLM API key — run [bold]applypilot init[/bold] or set GEMINI_API_KEY")
     if required >= 3:
         if not shutil.which("claude"):

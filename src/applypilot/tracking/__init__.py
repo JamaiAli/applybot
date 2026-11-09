@@ -5,6 +5,7 @@ and maintains per-job tracking documents with timelines and action items.
 """
 
 import logging
+import time
 from datetime import datetime, timezone
 
 from rich.console import Console
@@ -54,6 +55,7 @@ def _process_classified_email(
     dry_run: bool,
     conn,
     counters: dict,
+    new_events: list[dict] | None = None,
 ) -> None:
     """Match a classified email to a job and store results.
 
@@ -62,7 +64,7 @@ def _process_classified_email(
     """
     import json
 
-    from applypilot.tracking.matcher import match_email_to_job
+    from applypilot.tracking.matcher import match_email_to_job, extract_company_from_subject
     from applypilot.database import (
         store_tracking_email,
         store_tracking_person,
@@ -75,10 +77,14 @@ def _process_classified_email(
     if classification == "noise":
         return
 
+    company = ""
+    title = ""
     match = match_email_to_job(email, applied_jobs)
 
     if match:
         job_url = match["job_url"]
+        company = match.get("company", "")
+        title = match.get("title", "")
         counters["matched"] += 1
         log.info("Matched email '%s' -> %s (score: %d)",
                  email.get("subject", "")[:50], job_url[:60], match["score"])
@@ -91,6 +97,8 @@ def _process_classified_email(
             return
         job_url = create_stub_job(email, classification, conn)
         counters["stubs"] += 1
+        company = extract_company_from_subject(email.get("subject", "")) or email.get("sender_name", "") or "Entreprise"
+        title = email.get("subject", "") or "Candidature spontanée"
         log.info("Created stub job for '%s' -> %s",
                  email.get("subject", "")[:50], job_url[:60])
 
@@ -146,6 +154,22 @@ def _process_classified_email(
                 "source_email_id": email["id"],
                 "first_seen_at": now,
             }, conn)
+
+    if new_events is not None:
+        new_events.append({
+            "type": classification,
+            "job_url": job_url,
+            "company": company,
+            "title": title,
+            "subject": email.get("subject", ""),
+            "sender": email.get("sender", ""),
+            "sender_name": email.get("sender_name", ""),
+            "date": email.get("date", now),
+            "summary": result.get("summary", ""),
+            "people": result.get("people", []),
+            "dates": result.get("dates", []),
+            "action_items": result.get("action_items", []),
+        })
 
 
 def remap_stubs(conn=None) -> dict:
@@ -358,12 +382,13 @@ def run_tracking(
     console.print(f"  Dry run:     {dry_run}\n")
 
     # 1. Search emails (metadata only — no body reads)
+    new_events: list[dict] = []
     try:
         emails = asyncio.run(search_application_emails(days=days, limit=limit))
     except Exception as e:
         console.print(f"[red]Gmail fetch failed:[/red] {e}")
         console.print("[dim]Run `applypilot track --setup` to verify Gmail connectivity.[/dim]")
-        return {"fetched": 0, "matched": 0, "classified": 0, "ghosted": 0, "errors": 1}
+        return {"fetched": 0, "matched": 0, "classified": 0, "ghosted": 0, "errors": 1, "new_events": []}
 
     console.print(f"  Fetched {len(emails)} emails from Gmail")
 
@@ -375,10 +400,26 @@ def run_tracking(
         console.print("  Nothing new to process.")
         ghosted_count = 0
         if not dry_run:
-            ghosted_count = detect_ghosted(applied_jobs, ghosted_days=ghosted_days, conn=conn)
+            ghosted_list = []
+            ghosted_count = detect_ghosted(applied_jobs, ghosted_days=ghosted_days, conn=conn, ghosted_list=ghosted_list)
+            for gj in ghosted_list:
+                new_events.append({
+                    "type": "ghosted",
+                    "job_url": gj.get("url", ""),
+                    "company": gj.get("company", ""),
+                    "title": gj.get("title", ""),
+                    "subject": "",
+                    "sender": "",
+                    "sender_name": "",
+                    "date": gj.get("applied_at", ""),
+                    "summary": f"Aucune nouvelle depuis {ghosted_days} jours après candidature.",
+                    "people": [],
+                    "dates": [],
+                    "action_items": [],
+                })
         return {"fetched": len(emails), "matched": 0, "stubs": 0,
                 "classified": 0, "ghosted": ghosted_count, "errors": 0,
-                "triage_savings_pct": 0.0}
+                "triage_savings_pct": 0.0, "new_events": new_events}
 
     # 3. Triage with pure Python
     triage_results, triage_stats = triage_batch(new_emails)
@@ -393,7 +434,8 @@ def run_tracking(
         if triage.classification in ("confirmation", "rejection"):
             result = triage.to_classifier_dict()
             classified_count += 1
-            _process_classified_email(email, result, applied_jobs, dry_run, conn, counters)
+            _process_classified_email(email, result, applied_jobs, dry_run, conn, counters, new_events=new_events)
+            time.sleep(0.4)
         elif triage.classification == "noise":
             pass  # Skip entirely
 
@@ -432,7 +474,8 @@ def run_tracking(
                 }
                 error_count += 1
 
-            _process_classified_email(email, result, applied_jobs, dry_run, conn, counters)
+            _process_classified_email(email, result, applied_jobs, dry_run, conn, counters, new_events=new_events)
+            time.sleep(0.4)
 
     # 7. Apply 'ap-track' Gmail label to non-noise emails
     if not dry_run:
@@ -449,7 +492,23 @@ def run_tracking(
     # 8. Detect ghosting
     ghosted_count = 0
     if not dry_run:
-        ghosted_count = detect_ghosted(applied_jobs, ghosted_days=ghosted_days, conn=conn)
+        ghosted_list = []
+        ghosted_count = detect_ghosted(applied_jobs, ghosted_days=ghosted_days, conn=conn, ghosted_list=ghosted_list)
+        for gj in ghosted_list:
+            new_events.append({
+                "type": "ghosted",
+                "job_url": gj.get("url", ""),
+                "company": gj.get("company", ""),
+                "title": gj.get("title", ""),
+                "subject": "",
+                "sender": "",
+                "sender_name": "",
+                "date": gj.get("applied_at", ""),
+                "summary": f"Aucune nouvelle depuis {ghosted_days} jours après candidature.",
+                "people": [],
+                "dates": [],
+                "action_items": [],
+            })
 
     # 9. Generate markdown docs
     matched_count = counters["matched"]
@@ -504,4 +563,5 @@ def run_tracking(
         "ghosted": ghosted_count,
         "errors": error_count,
         "triage_savings_pct": triage_stats.savings_pct,
+        "new_events": new_events,
     }

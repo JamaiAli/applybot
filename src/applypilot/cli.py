@@ -99,15 +99,15 @@ def run(
     limit: Optional[int] = typer.Option(None, "--limit", "-l", help="Max jobs per stage (tailor/cover). Default: 20."),
     workers: int = typer.Option(
         1, "--workers", "-w",
-        help="Parallel threads for Workday/smart-extract stages. (JobSpy runs sequentially regardless.)",
+        help="Parallel threads for discovery stages.",
     ),
     stream: bool = typer.Option(False, "--stream", help="Run stages concurrently (streaming mode)."),
     doc_format: str = typer.Option("docx", "--doc-format", help="Document format for resumes/cover letters: docx (default) or pdf."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview stages without executing."),
     source: Optional[list[str]] = typer.Option(
         None, "--source", "-s",
-        help="Discovery source(s) to run. Repeatable: --source hn --source jobspy. "
-             "Aliases: hn=hackernews, smart=smartextract. Only affects the discover stage.",
+        help="Discovery source(s) to run. Repeatable: --source hw. "
+             "Aliases: hw=hellowork. Only affects the discover stage.",
     ),
     list_sources: bool = typer.Option(
         False, "--list-sources",
@@ -123,7 +123,7 @@ def run(
             aliases = [a for a, canon in _SOURCE_ALIASES.items() if canon == name]
             alias_str = f"  (alias: {', '.join(aliases)})" if aliases else ""
             console.print(f"  [cyan]{name:<14s}[/cyan] {desc}{alias_str}")
-        console.print("\nUsage: applypilot run discover --source hn --source jobspy")
+        console.print("\nUsage: applypilot run discover --source hw")
         raise typer.Exit()
 
     _bootstrap()
@@ -211,7 +211,7 @@ def apply(
     reset_failed: bool = typer.Option(False, "--reset-failed", help="Reset all failed jobs for retry."),
     reset_category: Optional[str] = typer.Option(None, "--reset-category", help="Reset all jobs in a category for retry (e.g., blocked_technical)."),
     sessions: bool = typer.Option(False, "--sessions", help="List saved ATS sessions."),
-    clear_session: Optional[str] = typer.Option(None, "--clear-session", help="Clear a saved ATS session (e.g., workday)."),
+    clear_session: Optional[str] = typer.Option(None, "--clear-session", help="Clear a saved ATS session."),
 ) -> None:
     """Launch auto-apply to submit job applications."""
     _bootstrap()
@@ -522,7 +522,7 @@ def status() -> None:
                     f" Run: [bold]applypilot reset-category blocked_technical[/bold]"
                 )
 
-    # By site (group all HN: * sites under "HackerNews")
+    # By site
     if stats["by_site"]:
         site_table = Table(title="\nJobs by Source", show_header=True, header_style="bold magenta")
         site_table.add_column("Site")
@@ -530,7 +530,7 @@ def status() -> None:
 
         grouped: dict[str, int] = {}
         for site, count in stats["by_site"]:
-            key = "HackerNews" if (site or "").startswith("HN:") else (site or "Unknown")
+            key = site or "Unknown"
             grouped[key] = grouped.get(key, 0) + count
         for site, count in sorted(grouped.items(), key=lambda x: -x[1]):
             site_table.add_row(site, str(count))
@@ -885,7 +885,7 @@ def creds_show(
 
 @creds_app.command("add")
 def creds_add(
-    domain:   str = typer.Argument(..., help="Domain key (e.g. linkedin.com, myworkdayjobs.com)."),
+    domain:   str = typer.Argument(..., help="Domain key (e.g. hellowork.com)."),
     email:    str = typer.Option(...,  "--email",    "-e", help="Login email / username."),
     password: str = typer.Option(None, "--password", "-p", help="Password (prompted if omitted)."),
     site:     str = typer.Option(None, "--site",     "-s", help="Human-readable site name."),

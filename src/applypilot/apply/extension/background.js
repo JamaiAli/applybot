@@ -287,11 +287,13 @@ async function _injectStealth(tabId) {
   }
 }
 
-chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
-  if (info.status !== 'loading') return;
-  if (!tab.url || !/^https?:/.test(tab.url)) return;
-  _injectStealth(tabId);
-});
+if (typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.onUpdated) {
+  chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
+    if (info.status !== 'loading') return;
+    if (!tab.url || !/^https?:/.test(tab.url)) return;
+    _injectStealth(tabId);
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Per-job tab tracking (spec §3.2 — audit #3 fix)
@@ -336,21 +338,25 @@ function findOwningWorker(openerTabId) {
   return null;
 }
 
-chrome.tabs.onCreated.addListener(async (tab) => {
-  if (tab.openerTabId == null) return;
-  const owner = findOwningWorker(tab.openerTabId);
-  if (owner == null) return;
-  _tabSet.get(owner).add(tab.id);
-  await persistTabSet();
-});
+if (typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.onCreated) {
+  chrome.tabs.onCreated.addListener(async (tab) => {
+    if (tab.openerTabId == null) return;
+    const owner = findOwningWorker(tab.openerTabId);
+    if (owner == null) return;
+    _tabSet.get(owner).add(tab.id);
+    await persistTabSet();
+  });
+}
 
-chrome.tabs.onRemoved.addListener(async (tabId) => {
-  let changed = false;
-  for (const tabs of _tabSet.values()) {
-    if (tabs.delete(tabId)) changed = true;
-  }
-  if (changed) await persistTabSet();
-});
+if (typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.onRemoved) {
+  chrome.tabs.onRemoved.addListener(async (tabId) => {
+    let changed = false;
+    for (const tabs of _tabSet.values()) {
+      if (tabs.delete(tabId)) changed = true;
+    }
+    if (changed) await persistTabSet();
+  });
+}
 
 // On SW init: if WORKER_CONFIG identifies us as a specific worker's profile,
 // seed the in-set with the currently-active tab as the primary.
@@ -385,6 +391,95 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     appendAction(msg.event).then(() => sendResponse({ ok: true }));
     return true;
   }
+  // -------------------------------------------------------------------------
+  // Proxy API local ApplyPilot (Port 8765) — Exempt de CORS et Private Network Access
+  // -------------------------------------------------------------------------
+  if (msg.action === 'fetch_candidate') {
+    (async () => {
+      try {
+        const url = msg.url || '';
+        const resp = await fetch(`http://localhost:8765/api/candidate?url=${encodeURIComponent(url)}`, {
+          signal: AbortSignal.timeout(4000)
+        });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const data = await resp.json();
+        sendResponse({ ok: true, data });
+      } catch (err) {
+        sendResponse({ ok: false, error: err.message });
+      }
+    })();
+    return true;
+  }
+
+  if (msg.action === 'fetch_cv') {
+    (async () => {
+      try {
+        const url = msg.url || '';
+        const resp = await fetch(`http://localhost:8765/api/get-cv?url=${encodeURIComponent(url)}`, {
+          signal: AbortSignal.timeout(8000)
+        });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const buf = await resp.arrayBuffer();
+        let binary = '';
+        const bytes = new Uint8Array(buf);
+        for (let i = 0; i < bytes.byteLength; i++) {
+          binary += String.fromCharCode(bytes[i]);
+        }
+        const base64 = btoa(binary);
+        const disposition = resp.headers.get('Content-Disposition') || '';
+        let fileName = 'CV_Ali_Jamai.pdf';
+        const match = disposition.match(/filename="?([^"]+)"?/i);
+        if (match) fileName = match[1];
+        sendResponse({ ok: true, base64, fileName });
+      } catch (err) {
+        sendResponse({ ok: false, error: err.message });
+      }
+    })();
+    return true;
+  }
+
+  if (msg.action === 'smart_answer') {
+    (async () => {
+      try {
+        const resp = await fetch('http://localhost:8765/api/smart-answer', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ question: msg.question, job_title: msg.job_title }),
+          signal: AbortSignal.timeout(10000)
+        });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const data = await resp.json();
+        sendResponse({ ok: true, data });
+      } catch (err) {
+        sendResponse({ ok: false, error: err.message });
+      }
+    })();
+    return true;
+  }
+
+  if (msg.action === 'smart_select') {
+    (async () => {
+      try {
+        const resp = await fetch('http://localhost:8765/api/smart-select', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            question: msg.question,
+            options: msg.options,
+            job_title: msg.job_title
+          }),
+          signal: AbortSignal.timeout(10000)
+        });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const data = await resp.json();
+        sendResponse({ ok: true, data });
+      } catch (err) {
+        sendResponse({ ok: false, error: err.message });
+      }
+    })();
+    return true;
+  }
+
   if (msg.type === 'get-action-log') {
     const wid = msg.workerId ?? (typeof WORKER_CONFIG !== 'undefined' ? WORKER_CONFIG.workerId : null);
     chrome.storage.local.get(['actionLog']).then(({ actionLog }) => {
@@ -435,29 +530,36 @@ async function appendAction(event) {
 // The setInterval below handles 3s polling while the SW is alive.
 // The alarm acts as a restart trigger: Chrome wakes the SW to fire the alarm,
 // at which point setInterval restarts from scratch in the new SW context.
-chrome.alarms.create('poll', { periodInMinutes: 1 });
-chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === 'poll') pollAll();
-});
+if (typeof chrome !== 'undefined' && chrome.alarms && chrome.alarms.create) {
+  try {
+    chrome.alarms.create('poll', { periodInMinutes: 1 });
+    chrome.alarms.onAlarm.addListener((alarm) => {
+      if (alarm.name === 'poll') pollAll();
+    });
+  } catch (_e) {}
+}
 
-// Keep the service worker alive by making a harmless runtime API call every 25s.
-// Chrome MV3 terminates idle SWs after ~30s; this extends the window so the
-// 3s setInterval below stays active during normal use. The 1-min alarm above
-// handles the case where the SW does get terminated between popup opens.
-setInterval(() => chrome.runtime.getPlatformInfo(() => {}), 25000);
+setInterval(() => {
+  try {
+    if (chrome.runtime && chrome.runtime.getPlatformInfo) {
+      chrome.runtime.getPlatformInfo(() => {});
+    }
+  } catch (_e) {}
+}, 25000);
 
-// Also poll on install/startup
-chrome.runtime.onInstalled.addListener(pollAll);
-chrome.runtime.onStartup.addListener(pollAll);
+if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
+  chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    if (msg.type === 'poll') {
+      pollAll().then(() => sendResponse({ ok: true }));
+      return true;
+    }
+  });
+}
 
-// Poll immediately and on message from popup
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  if (msg.type === 'poll') {
-    pollAll().then(() => sendResponse({ ok: true }));
-    return true; // async response
-  }
-});
-
-// Start polling loop via setInterval (alarms have 1-min minimum)
-setInterval(pollAll, POLL_MS);
-pollAll();
+// Only poll automation workers if this profile has WORKER_CONFIG defined
+if (typeof WORKER_CONFIG !== 'undefined' && WORKER_CONFIG.workerId !== null) {
+  if (chrome.runtime && chrome.runtime.onInstalled) chrome.runtime.onInstalled.addListener(pollAll);
+  if (chrome.runtime && chrome.runtime.onStartup) chrome.runtime.onStartup.addListener(pollAll);
+  setInterval(pollAll, POLL_MS);
+  pollAll();
+}

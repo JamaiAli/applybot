@@ -27,6 +27,7 @@ import datetime as _dt
 import html
 import logging
 import os
+import re
 import subprocess
 import sys
 
@@ -41,7 +42,7 @@ from telegram import (
     InputFile,
     Update,
 )
-from telegram.constants import ParseMode
+from telegram.constants import ChatAction, ParseMode
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -53,6 +54,7 @@ from telegram.ext import (
 
 from applypilot import bot_core
 from applypilot.database import get_stats
+from applypilot.discovery.dates import format_age_fr
 
 log = logging.getLogger("applypilot.telegram")
 
@@ -67,6 +69,13 @@ MAX_CARDS = bot_core.MAX_CARDS
 DAILY_HOUR = int(os.environ.get("BOT_DAILY_HOUR", "9"))
 # Intervalle de la veille automatique (minutes). Défaut 10.
 CYCLE_MINUTES = int(os.environ.get("BOT_CYCLE_MINUTES", "10"))
+# Cadence dédiée au scraping Indeed (heures). Indeed est lourd (beaucoup de
+# requêtes) : on l'espace davantage que HelloWork pour éviter les blocages.
+# HelloWork reste à CYCLE_MINUTES ; Indeed est scrapé toutes les N heures.
+INDEED_CYCLE_HOURS = float(os.environ.get("BOT_INDEED_CYCLE_HOURS", "2"))
+# Nombre de cycles de veille entre deux scrapes Indeed (>= 1).
+_INDEED_EVERY_TICKS = (max(1, round(INDEED_CYCLE_HOURS * 60 / CYCLE_MINUTES))
+                       if CYCLE_MINUTES > 0 else 1)
 
 # CV fixe pour les jobs étudiants / intérim (déposé par Ali).
 JOB_CV = config.APP_DIR / "cv_job_etudiant.pdf"
@@ -119,9 +128,21 @@ def _offer_text(row: dict) -> str:
     lines = [f"<b>{title}</b>", f"🏢 {company}   ·   ⭐ <b>{score}/10</b>"]
     if row.get("location"):
         lines.append(f"📍 {html.escape(str(row['location'])[:100])}")
-    posted = _format_posted(row.get("posted_at"))
-    if posted:
-        lines.append(f"🗓 Publiée {posted}")
+    age = format_age_fr(row.get("posted_at"))
+    if age:
+        if "aujourd'hui" in age:
+            lines.append(f"🔥 <b>Parue {age}</b>")
+        else:
+            lines.append(f"📅 {age}")
+    source = bot_core.display_source(row)
+    domaine = bot_core.display_domaines(row)
+    meta = []
+    if source:
+        meta.append(f"🔎 {html.escape(source)}")
+    if domaine:
+        meta.append(f"🏷 {html.escape(domaine)}")
+    if meta:
+        lines.append("   ·   ".join(meta))
     reason = (row.get("score_reasoning") or "").strip()
     if reason:
         lines.append("")
@@ -170,24 +191,115 @@ async def _send_offer(bot, chat_id: int, row: dict) -> None:
 # ---------------------------------------------------------------------------
 # Logique partagée recherche + post
 # ---------------------------------------------------------------------------
-async def _run_search_and_post(bot, chat_id: int, limit: int, do_search: bool = True) -> int:
+KNOWN_CITIES = {
+    "paris", "bourges", "saint-doulchard", "saint doulchard", "lyon", "marseille",
+    "bordeaux", "toulouse", "lille", "nantes", "rennes", "strasbourg",
+    "montpellier", "nice", "orleans", "tours", "vierzon", "ile-de-france", "cher",
+}
+
+
+def _parse_search_args(args: list[str] | None, default_limit: int = MAX_CARDS) -> tuple[str | None, str | None, int]:
+    """Parse les arguments pour /search ou /offres.
+    Supporte:
+      /search soc
+      /search pentest Paris
+      /search ad 10
+      /search soc à Lyon 5
+      /search Paris
+      /offres grc
+    Retourne (metier_query, city, limit).
+    """
+    if not args:
+        return None, None, default_limit
+    tokens = [a.strip() for a in args if a.strip()]
+    limit = default_limit
+    city: str | None = None
+    metier: str | None = None
+
+    if tokens and tokens[-1].isdigit():
+        limit = min(20, max(1, int(tokens.pop())))
+
+    if not tokens:
+        return None, None, limit
+
+    # Vérifier si le dernier mot est une ville connue
+    if tokens and tokens[-1].lower() in KNOWN_CITIES:
+        city = tokens.pop().lower()
+
+    # Retirer les prépositions finales éventuelles ("à", "sur", "dans", "in")
+    if tokens and tokens[-1].lower() in ("à", "a", "dans", "sur", "in", "ville", "de"):
+        tokens.pop()
+
+    joined = " ".join(tokens).strip()
+    m_loc = re.search(r'\b(?:ville|a|à|dans|sur|in)\s+([A-Za-zÀ-ÿ\- ]+)', joined, re.I)
+    if m_loc and not city:
+        city = m_loc.group(1).strip()
+        joined = (joined[:m_loc.start()] + " " + joined[m_loc.end():]).strip()
+        tokens = joined.split()
+
+    remaining = " ".join(tokens).strip().lower() if tokens else ""
+    if remaining:
+        if remaining in KNOWN_CITIES and not city:
+            city = remaining
+        else:
+            metier = remaining
+
+    return metier, city, limit
+
+
+def _parse_offres_args(args: list[str] | None, default_limit: int = MAX_CARDS) -> tuple[str | None, int]:
+    metier, city, limit = _parse_search_args(args, default_limit)
+    return (city or metier), limit
+
+
+async def _run_search_and_post(bot, chat_id: int, limit: int, do_search: bool = True,
+                               city: str | None = None, metier: str | None = None) -> int:
     if do_search:
         from applypilot import pipeline
-        await bot.send_message(chat_id, "🔎 Recherche en cours (discover + score)…")
+        ville_txt = f" à {city}" if city else ""
+        metier_txt = f" ciblée sur <b>{html.escape(metier.upper())}</b>" if metier else ""
+        await bot.send_message(chat_id, f"🔎 Recherche Indeed{metier_txt} en cours{ville_txt}…", parse_mode=ParseMode.HTML)
         try:
-            await asyncio.to_thread(pipeline._run_discover)
+            queries_override = None
+            if metier:
+                from applypilot.discovery import indeed as _ind
+                m_lower = metier.lower()
+                for dom_name, q_list in _ind.QUERIES.items():
+                    if m_lower in dom_name.lower() or any(m_lower in q.lower() for q in q_list):
+                        queries_override = {dom_name: q_list}
+                        break
+                if not queries_override:
+                    queries_override = {f"Custom {metier}": [f"stage {metier}", f"alternance {metier}", metier]}
+
+            await asyncio.to_thread(pipeline._run_discover, 1, ["indeed"], queries=queries_override, location=city)
             await asyncio.to_thread(pipeline._run_score)
         except Exception as exc:
             log.exception("Pipeline échoué : %s", exc)
             await bot.send_message(chat_id, f"⚠️ Recherche partielle : {exc}")
 
-    offers = await asyncio.to_thread(bot_core.fetch_pending_offers, MIN_SCORE, limit)
+    offers = await asyncio.to_thread(
+        bot_core.fetch_pending_offers, MIN_SCORE, limit, ("indeed_scrape",), None, city, metier)
+    if not offers and metier:
+        offers = await asyncio.to_thread(
+            bot_core.fetch_pending_offers, 7, limit, ("indeed_scrape",), None, city, metier)
+
+    metier_label = f" <b>{html.escape(metier.upper())}</b>" if metier else ""
+    ville_label = f" à <b>{html.escape(city)}</b>" if city else ""
+
     if not offers:
+        aide_txt = (
+            f"\n\n💡 <i>Astuce : tu peux élargir avec <code>/search {html.escape(metier)}</code> "
+            f"ou tester <code>/offres</code> sans filtre.</i>" if metier else ""
+        )
         await bot.send_message(
-            chat_id, f"Aucune nouvelle offre ≥ {MIN_SCORE}/10 à valider pour l'instant.")
+            chat_id,
+            f"Aucune offre Indeed{metier_label}{ville_label} récente (< 7j) à valider pour l'instant.{aide_txt}",
+            parse_mode=ParseMode.HTML)
         return 0
 
-    await bot.send_message(chat_id, f"📋 {len(offers)} offre(s) à examiner :")
+    await bot.send_message(
+        chat_id, f"📋 {len(offers)} offre(s) Indeed{metier_label}{ville_label} à examiner :",
+        parse_mode=ParseMode.HTML)
     for row in offers:
         await _send_offer(bot, chat_id, row)
     return len(offers)
@@ -200,38 +312,194 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _authorized(update):
         return await _deny(update)
     await update.message.reply_text(
-        "👋 ApplyPilot est prêt.\n\n"
-        "/search — chercher + scorer, puis présenter les meilleures offres\n"
-        "/offres — afficher les offres à valider (sans relancer la recherche)\n"
-        "/status — état du pipeline\n"
-        "/pause — mettre en pause la veille auto (toutes les 10 min)\n"
-        "/resume — la réactiver\n"
-        "/clean — nettoyer la discussion (messages < 48 h)\n"
-        "/job — jobs étudiants + intérim dispo (défaut : Bourges)\n"
-        "/done — marquer la dernière candidature préparée comme postulée\n\n"
+        "👋 <b>ApplyPilot est prêt.</b>\n\n"
+        "Tape <b>/commandes</b> pour voir la liste complète et détaillée de toutes les commandes !\n\n"
+        "• <code>/scan [métier] [ville]</code> — scanner en temps réel les sites pour dénicher les offres inédites\n"
+        "• <code>/search [métier] [ville]</code> — chercher sur Indeed (ex: <code>/search soc</code>, <code>/search pentest Paris</code>)\n"
+        "• <code>/offres [métier] [ville]</code> — voir les offres en base (ex: <code>/offres soc</code>, <code>/offres ad</code>)\n"
+        "• <code>/job</code> — jobs étudiants Bourges & Saint-Doulchard\n"
+        "• <code>/track</code> — scanner les réponses recruteurs sur Gmail\n"
+        "• <code>/status</code> — état du pipeline et de la veille auto\n\n"
         "Sur chaque offre : ✅ Valider · ✏️ Modifier · ❌ Ignorer.\n"
-        "Je ne soumets jamais rien sans ton ✅.")
+        "Je ne soumets jamais rien sans ton ✅.",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def commandes_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Affiche la liste complète et détaillée de toutes les commandes disponibles."""
+    if not _authorized(update):
+        return await _deny(update)
+
+    msg = (
+        "🤖 <b>Toutes les commandes d'ApplyPilot</b>\n\n"
+        "🎯 <b>Recherche & Offres Cybersécurité</b>\n"
+        "• <code>/scan [métier] [ville] [limite]</code> — ⚡ Scan en temps réel des sites (HelloWork, Indeed) : ignore tout ce qui est déjà en base et diffuse les toutes dernières offres en direct !\n"
+        "• <code>/search [métier] [ville] [limite]</code> — Recherche ciblée en direct sur Indeed + scoring IA (ex : <code>/search soc</code>, <code>/search pentest Paris</code>, <code>/search ad 10</code>)\n"
+        "• <code>/offres [métier] [ville] [limite]</code> — Affiche les offres fraîches (≤ 7 jours, aujourd'hui en tête) prêtes en base (ex : <code>/offres soc</code>, <code>/offres Paris</code>)\n\n"
+        "💼 <b>Jobs Étudiants & Intérim</b>\n"
+        "• <code>/job [ville]</code> — Recherche live de jobs étudiants, temps partiel et intérim (par défaut Bourges & Saint-Doulchard)\n\n"
+        "📬 <b>Suivi Recruteurs & Boîte Gmail</b>\n"
+        "• <code>/track [jours]</code> — Analyse ta boîte Gmail pour détecter et classifier les réponses recruteurs (défaut : 7 jours)\n"
+        "• <code>/confirmees</code> — Affiche le récapitulatif détaillé des candidatures confirmées et en cours\n"
+        "• <code>/refus</code> — Liste les refus reçus avec entreprises, postes et dates\n"
+        "• <code>/trackers</code> — Suivi des ouvertures de tes CV par les recruteurs (liens traceurs cliqués)\n\n"
+        "⚙️ <b>Gestion & Contrôle du Bot</b>\n"
+        "• <code>/status</code> — Bilan global du pipeline (offres en base, scores, veille)\n"
+        "• <code>/pause</code> — Met en pause la veille automatique (toutes les 10 min)\n"
+        "• <code>/resume</code> — Réactive la veille automatique\n"
+        "• <code>/clean</code> — Supprime les messages récents du bot (moins de 48h) dans cette discussion\n"
+        "• <code>/done</code> — Marque la dernière offre préparée comme postulée\n"
+        "• <code>/commandes</code> — Affiche ce menu d'aide complet\n\n"
+        "💡 <i>Sur chaque offre présentée, clique sur ✅ Valider, ✏️ Modifier ou ❌ Ignorer. Rien n'est envoyé sans ton accord !</i>"
+    )
+    try:
+        await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+    except Exception:
+        # Fallback sans HTML si erreur de parsing Telegram
+        import re as _re
+        plain_msg = _re.sub(r'<[^>]+>', '', msg)
+        await update.message.reply_text(plain_msg)
+
+
+async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Scanne en temps réel les sites d'offres (HelloWork, Indeed), filtre tout ce qui est
+    déjà présent en base, et diffuse immédiatement les toutes dernières offres inédites."""
+    if not _authorized(update):
+        return await _deny(update)
+
+    metier, city, limit = _parse_search_args(context.args, MAX_CARDS)
+    chat_id = update.effective_chat.id
+
+    metier_label = f" ciblée sur <b>{html.escape(metier.upper())}</b>" if metier else ""
+    ville_label = f" à <b>{html.escape(city)}</b>" if city else ""
+
+    status_msg = await update.message.reply_text(
+        f"⚡ <b>Scan en temps réel des sites d'offres{metier_label}{ville_label}…</b>\n\n"
+        f"📡 <i>Interrogation en direct de HelloWork et Indeed pour dénicher les offres les plus fraîches qui ne sont <b>pas encore</b> dans ta base…</i>",
+        parse_mode=ParseMode.HTML,
+    )
+
+    async def _keep_typing():
+        while True:
+            try:
+                await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+            except Exception:
+                pass
+            await asyncio.sleep(4)
+
+    typing_task = asyncio.create_task(_keep_typing())
+
+    try:
+        existing_urls = await asyncio.to_thread(bot_core.get_all_job_urls)
+
+        from applypilot import pipeline
+        queries_indeed = None
+        queries_hw = None
+        if metier:
+            from applypilot.discovery import indeed as _ind
+            m_lower = metier.lower()
+            for dom_name, q_list in _ind.QUERIES.items():
+                if m_lower in dom_name.lower() or any(m_lower in q.lower() for q in q_list):
+                    queries_indeed = {dom_name: q_list}
+                    break
+            if not queries_indeed:
+                queries_indeed = {f"Scan {metier}": [f"stage {metier}", f"alternance {metier}", metier]}
+            queries_hw = [f"stage {metier}", f"alternance {metier}", metier]
+
+        def _do_live_scan():
+            pipeline._run_discover(
+                workers=1,
+                sources=["hellowork", "indeed"],
+                queries=queries_indeed or queries_hw,
+                location=city,
+            )
+            all_urls = bot_core.get_all_job_urls()
+            new_urls = list(all_urls - existing_urls)
+            if new_urls:
+                pipeline._run_score()
+            return new_urls
+
+        newly_found_urls = await asyncio.to_thread(_do_live_scan)
+
+        if not newly_found_urls:
+            metier_hint = f" {html.escape(metier)}" if metier else ""
+            await status_msg.edit_text(
+                f"✅ <b>Scan en direct terminé</b> : Aucune nouvelle offre détectée sur les sites (toutes les offres en ligne font déjà partie de ta base de données).\n\n"
+                f"💡 <i>Pour voir les offres fraîches déjà qualifiées en base, tape <code>/offres{metier_hint}</code> !</i>",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        offers = await asyncio.to_thread(
+            bot_core.fetch_new_scan_offers,
+            newly_found_urls,
+            MIN_SCORE,
+            limit,
+            city,
+            metier,
+        )
+        if not offers and metier:
+            offers = await asyncio.to_thread(
+                bot_core.fetch_new_scan_offers,
+                newly_found_urls,
+                4,
+                limit,
+                city,
+                metier,
+            )
+
+        if not offers:
+            await status_msg.edit_text(
+                f"📊 <b>Scan en direct terminé</b> : <b>{len(newly_found_urls)}</b> nouvelle(s) offre(s) scannée(s) sur le web, "
+                f"mais aucune ne correspondait suffisamment à tes critères de stage (score trop bas ou hors-sujet).\n\n"
+                f"💡 <i>Toutes ces offres ont été enregistrées en base pour l'historique.</i>",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        await status_msg.edit_text(
+            f"🆕 <b>{len(offers)} nouvelle(s) offre(s) inédite(s) trouvée(s) en direct !</b> Envoi en cours…",
+            parse_mode=ParseMode.HTML,
+        )
+
+        for row in offers:
+            await _send_offer(context.bot, chat_id, row)
+
+        await asyncio.to_thread(bot_core.mark_notified, [o["url"] for o in offers])
+
+        await context.bot.send_message(
+            chat_id,
+            f"🎯 <b>Scan terminé</b> : {len(offers)} nouvelle(s) offre(s) fraîche(s) envoyée(s) en direct !",
+            parse_mode=ParseMode.HTML,
+        )
+
+    except Exception as exc:
+        log.exception("Erreur lors du scan en temps réel : %s", exc)
+        await status_msg.edit_text(f"⚠️ Erreur lors du scan : {html.escape(str(exc))}", parse_mode=ParseMode.HTML)
+    finally:
+        typing_task.cancel()
 
 
 async def search_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _authorized(update):
         return await _deny(update)
-    limit = MAX_CARDS
-    if context.args and context.args[0].isdigit():
-        limit = int(context.args[0])
-    n = await _run_search_and_post(context.bot, update.effective_chat.id, limit)
+    metier, city, limit = _parse_search_args(context.args, MAX_CARDS)
+    n = await _run_search_and_post(context.bot, update.effective_chat.id, limit, do_search=True, city=city, metier=metier)
+    cible_txt = f" ({metier.upper()})" if metier else ""
+    ville_txt = f" à {city}" if city else ""
     await context.bot.send_message(update.effective_chat.id,
-                                   f"Terminé — {n} offre(s) présentée(s).")
+                                   f"Terminé — {n} offre(s) présentée(s){cible_txt}{ville_txt}.")
 
 
 async def offres_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _authorized(update):
         return await _deny(update)
-    limit = MAX_CARDS
-    if context.args and context.args[0].isdigit():
-        limit = int(context.args[0])
-    n = await _run_search_and_post(context.bot, update.effective_chat.id, limit, do_search=False)
-    await context.bot.send_message(update.effective_chat.id, f"{n} offre(s) affichée(s).")
+    metier, city, limit = _parse_search_args(context.args, MAX_CARDS)
+    n = await _run_search_and_post(context.bot, update.effective_chat.id, limit, do_search=False, city=city, metier=metier)
+    cible_txt = f" ({metier.upper()})" if metier else ""
+    ville_txt = f" à {city}" if city else ""
+    await context.bot.send_message(update.effective_chat.id, f"{n} offre(s) affichée(s){cible_txt}{ville_txt}.")
 
 
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -299,7 +567,7 @@ async def _send_job_list(bot, chat_id: int, titre: str, jobs: list[dict]) -> Non
     """Envoie chaque job (étudiant / intérim) en message séparé AVEC un bouton
     « 🚀 Postuler » (pré-remplit le formulaire + CV job étudiant sur le PC)."""
     if not jobs:
-        await bot.send_message(chat_id, f"{titre} : aucune offre trouvée.")
+        await bot.send_message(chat_id, f"{titre} : aucune offre de moins d'une semaine trouvée.")
         return
     await bot.send_message(chat_id, f"<b>{html.escape(titre)}</b> — {len(jobs)} offre(s)",
                            parse_mode=ParseMode.HTML)
@@ -309,12 +577,48 @@ async def _send_job_list(bot, chat_id: int, titre: str, jobs: list[dict]) -> Non
         comp = html.escape((j.get("employer_name") or "")[:40])
         loc = html.escape((j.get("location") or "")[:40])
         txt = f"<b>{t}</b>\n{comp}" + (f" · {loc}" if loc else "")
+        extra = []
+        age = format_age_fr(j.get("posted_at"))
+        if age:
+            if "aujourd'hui" in age:
+                extra.append(f"🔥 <b>{age}</b>")
+            else:
+                extra.append(f"📅 {age}")
+        if j.get("week_end"):
+            extra.append("🗓️ week-end")
+        if extra:
+            txt += "\n" + " · ".join(extra)
         kb = InlineKeyboardMarkup([[
             InlineKeyboardButton("🚀 Postuler", callback_data=f"jobapply:{h}"),
             InlineKeyboardButton("Voir l'offre", url=j["url"]),
         ]])
         await bot.send_message(chat_id, txt, parse_mode=ParseMode.HTML,
                                reply_markup=kb, disable_web_page_preview=True)
+        await asyncio.sleep(0.25)
+
+
+def _merge_student_jobs(*lists: list[dict]) -> list[dict]:
+    """Fusionne plusieurs listes de jobs (HelloWork + Indeed), dédupliquées par
+    URL puis par (titre, entreprise, lieu) normalisés — l'ordre des listes
+    décide du gagnant en cas de doublon."""
+    seen_url: set[str] = set()
+    seen_key: set[tuple] = set()
+    out: list[dict] = []
+    for lst in lists:
+        for j in lst or []:
+            u = j.get("url")
+            if u and u in seen_url:
+                continue
+            key = (bot_core._norm_key(j.get("title")),
+                   bot_core._norm_key(j.get("employer_name")),
+                   bot_core._norm_key(j.get("location")))
+            if key in seen_key:
+                continue
+            if u:
+                seen_url.add(u)
+            seen_key.add(key)
+            out.append(j)
+    return out
 
 
 async def done_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -342,20 +646,412 @@ async def done_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"✅ Marquée « postulée » : {titre}. Bravo 🎉")
 
 
+async def trackers_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Affiche les statistiques et dernières consultations de CV (Tracer Links)."""
+    if not _authorized(update):
+        return await _deny(update)
+    from applypilot.database import get_recent_trackers, get_tracker_stats
+    from applypilot.tracking.tracer import parse_user_agent
+    stats = get_tracker_stats()
+    recent = get_recent_trackers(10)
+    lines = [
+        "📊 <b>Suivi des consultations de CV (Tracer Links)</b>",
+        f"• Total traceurs générés : <b>{stats['total_trackers']}</b>",
+        f"• CV ouverts par un recruteur : <b>{stats['opened_trackers']}</b>",
+        f"• Total consultations : <b>{stats['total_opens']}</b>",
+        f"• Serveur traceur : <code>{config.TRACER_BASE_URL}</code>",
+        "",
+    ]
+    if not recent:
+        lines.append("<i>Aucun traceur enregistré pour le moment.</i>")
+    else:
+        lines.append("<b>Derniers traceurs :</b>")
+        for t in recent:
+            comp = html.escape(t.get("company") or "Entreprise")
+            tit = html.escape((t.get("title") or "Offre")[:32])
+            cnt = t.get("open_count") or 0
+            if cnt > 0:
+                dev = html.escape(parse_user_agent(t.get("user_agent")))
+                dt = t.get("last_opened_at") or t.get("opened_at") or ""
+                dt_str = dt[:16].replace("T", " ") if dt else ""
+                lines.append(
+                    f"🟢 <b>{comp}</b> — {tit}\n"
+                    f"   ↳ <b>{cnt} consultation(s)</b> (Dernière : {dt_str} via {dev})"
+                )
+            else:
+                lines.append(f"⚪ <b>{comp}</b> — {tit}\n   ↳ <i>Pas encore ouvert</i>")
+    await update.effective_message.reply_text(
+        "\n".join(lines),
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+    )
+
+
+def _format_tracking_event(ev: dict) -> str:
+    """Formate un événement de réponse recruteur pour Telegram."""
+    etype = ev.get("type")
+    comp = html.escape(ev.get("company") or "Entreprise")
+    tit = html.escape(ev.get("title") or "Candidature")
+    subj = html.escape(ev.get("subject") or "")
+    summary = html.escape(ev.get("summary") or "")
+
+    if etype == "interview":
+        lines = [
+            "🎉 <b>INVITATION EN ENTRETIEN !</b>",
+            "",
+            f"🏢 <b>Entreprise :</b> {comp}",
+            f"💼 <b>Poste :</b> {tit}",
+            f"📬 <b>Objet :</b> {subj}",
+        ]
+        contact = ev.get("sender_name") or ev.get("sender")
+        if contact:
+            lines.append(f"👤 <b>Contact :</b> {html.escape(contact)}")
+        dates = ev.get("dates") or []
+        if dates:
+            d_parts = [f"{d.get('date', '')} ({d.get('description', '')})".strip() for d in dates if d.get("date")]
+            if d_parts:
+                lines.append(f"📅 <b>Date(s) :</b> {html.escape(', '.join(d_parts))}")
+        actions = ev.get("action_items") or []
+        if actions:
+            a_parts = [a.get("task", "") for a in actions if a.get("task")]
+            if a_parts:
+                lines.append(f"⚡ <b>Action requise :</b> {html.escape('; '.join(a_parts))}")
+        if summary:
+            lines.append(f"\n💬 <i>{summary}</i>")
+        return "\n".join(lines)
+
+    elif etype == "offer":
+        lines = [
+            "🥳 <b>OFFRE DE STAGE OU D'EMBAUCHE !</b>",
+            "",
+            f"🏢 <b>Entreprise :</b> {comp}",
+            f"💼 <b>Poste :</b> {tit}",
+            f"📬 <b>Objet :</b> {subj}",
+        ]
+        if summary:
+            lines.append(f"\n💬 <i>{summary}</i>")
+        return "\n".join(lines)
+
+    elif etype == "rejection":
+        lines = [
+            "❌ <b>Réponse négative reçue</b>",
+            "",
+            f"🏢 <b>Entreprise :</b> {comp}",
+            f"💼 <b>Poste :</b> {tit}",
+        ]
+        if summary:
+            lines.append(f"💬 <i>{summary}</i>")
+        return "\n".join(lines)
+
+    elif etype == "confirmation":
+        return (
+            f"📨 <b>Candidature bien enregistrée</b>\n\n"
+            f"🏢 <b>{comp}</b> — {tit}\n"
+            f"📬 <i>{subj}</i>"
+        )
+
+    elif etype == "ghosted":
+        return (
+            f"👻 <b>Candidature sans réponse (Ghosting)</b>\n\n"
+            f"🏢 <b>{comp}</b> — {tit}\n"
+            f"⏳ <i>Plus de 7 jours sans retour depuis l'envoi.</i>"
+        )
+
+    return ""
+
+
+async def track_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Vérifie la boîte Gmail et classifie les réponses des recruteurs."""
+    if not _authorized(update):
+        return await _deny(update)
+
+    from applypilot.tracking.gmail_client import check_gmail_setup
+    ok, msg = check_gmail_setup()
+    if not ok:
+        await update.effective_message.reply_text(
+            f"⚠️ <b>Suivi Gmail non configuré</b>\n\n"
+            f"{html.escape(msg)}",
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+        return
+
+    days = 7
+    if context.args and context.args[0].isdigit():
+        days = min(60, max(1, int(context.args[0])))
+
+    chat_id = update.effective_chat.id
+    status_msg = await context.bot.send_message(
+        chat_id, f"📬 <i>Analyse des {days} derniers jours sur ta boîte Gmail…</i>",
+        parse_mode=ParseMode.HTML,
+    )
+
+    from applypilot.tracking import run_tracking
+    from applypilot.database import get_tracking_stats
+
+    # Feedback visuel continu pendant l'analyse Gmail
+    async def _keep_typing():
+        while True:
+            try:
+                await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+            except Exception:
+                pass
+            await asyncio.sleep(4)
+
+    typing_task = asyncio.create_task(_keep_typing())
+
+    try:
+        res = await asyncio.to_thread(run_tracking, days=days, limit=30, ghosted_days=7, dry_run=False)
+    except Exception as exc:
+        log.exception("Erreur lors du suivi Gmail : %s", exc)
+        try:
+            await status_msg.edit_text(f"❌ Erreur lors de l'analyse Gmail : {html.escape(str(exc))}")
+        except Exception:
+            await context.bot.send_message(chat_id, f"❌ Erreur lors de l'analyse Gmail : {html.escape(str(exc))}")
+        return
+    finally:
+        typing_task.cancel()
+
+    fetched = res.get("fetched", 0)
+    matched = res.get("matched", 0)
+    stubs = res.get("stubs", 0)
+    classified = res.get("classified", 0)
+    savings = int(res.get("triage_savings_pct", 0))
+    new_events = res.get("new_events", [])
+
+    stats = get_tracking_stats()
+    lines = [
+        "📬 <b>Rapport du suivi des candidatures (Gmail)</b>",
+        "",
+        f"• Emails analysés : <b>{fetched}</b>",
+        f"• Nouvelles réponses classifiées : <b>{classified}</b>",
+        f"• Rapprochées à tes offres : <b>{matched}</b>" + (f" (+{stubs} hors pipeline)" if stubs else ""),
+        f"• Économie LLM (triage instantané) : <b>{savings}%</b>",
+        "",
+        "📊 <b>Bilan global de tes candidatures :</b>",
+        f"🎉 Entretiens : <b>{stats.get('interview', 0)}</b>",
+        f"📨 Confirmées / En cours : <b>{stats.get('confirmation', 0)}</b>",
+        f"❌ Refus : <b>{stats.get('rejection', 0)}</b>",
+        f"👻 Sans réponse (Ghosting) : <b>{stats.get('ghosted', 0)}</b>",
+    ]
+    if stats.get('offer', 0):
+        lines.append(f"🥳 Offres reçues : <b>{stats.get('offer', 0)}</b>")
+
+    report_text = "\n".join(lines)
+    try:
+        await status_msg.edit_text(report_text, parse_mode=ParseMode.HTML)
+    except Exception:
+        await context.bot.send_message(chat_id, report_text, parse_mode=ParseMode.HTML)
+
+    # Notification sonore/vibration sur mobile
+    if not new_events:
+        await context.bot.send_message(
+            chat_id,
+            f"✅ <b>Suivi Gmail terminé</b> : {fetched} email(s) analysés (économies triage : {savings}%), tout est à jour !",
+            parse_mode=ParseMode.HTML,
+        )
+
+    for ev in new_events:
+        card = _format_tracking_event(ev)
+        if card:
+            await context.bot.send_message(chat_id, card, parse_mode=ParseMode.HTML)
+
+
+def _format_date_fr(raw: str | None) -> str:
+    """Formate une date RFC 2822 ou ISO en format lisible en français."""
+    if not raw:
+        return "Date inconnue"
+    import email.utils
+    try:
+        dt = email.utils.parsedate_to_datetime(raw)
+        return dt.strftime("%d/%m/%Y à %H:%M")
+    except Exception:
+        pass
+    try:
+        from datetime import datetime
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        return dt.strftime("%d/%m/%Y à %H:%M")
+    except Exception:
+        return str(raw)[:16]
+
+
+async def _send_classified_report(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    classification: str,
+    title_emoji: str,
+    title_text: str,
+) -> None:
+    """Envoie la liste détaillée des emails classifiés (confirmations ou refus)."""
+    if not _authorized(update):
+        return await _deny(update)
+
+    import json
+    import re
+    from applypilot.database import get_classified_emails
+    from applypilot.tracking.matcher import extract_company_from_subject
+
+    emails = get_classified_emails(classification, limit=20)
+    chat_id = update.effective_chat.id
+
+    if not emails:
+        empty_msg = {
+            "confirmation": "📬 <i>Aucune candidature confirmée trouvée dans tes emails récents.</i>",
+            "rejection": "✨ <i>Aucun refus trouvé dans tes emails récents !</i>",
+        }.get(classification, "<i>Aucun email trouvé.</i>")
+        await update.effective_message.reply_text(empty_msg, parse_mode=ParseMode.HTML)
+        return
+
+    cards = [f"{title_emoji} <b>{title_text} ({len(emails)})</b>\n"]
+
+    for i, e in enumerate(emails, 1):
+        subj = e.get("subject") or "Sans objet"
+        comp = (
+            e.get("company")
+            or extract_company_from_subject(subj)
+            or e.get("sender_name")
+            or e.get("sender")
+            or "Entreprise"
+        )
+        job_title = e.get("title") or ""
+        date_str = _format_date_fr(e.get("received_at"))
+
+        summary = ""
+        if e.get("extracted_data"):
+            try:
+                data = json.loads(e["extracted_data"])
+                summary = data.get("summary", "")
+            except Exception:
+                pass
+        if not summary and e.get("snippet"):
+            summary = e["snippet"]
+
+        clean_comp = html.escape(comp)
+        clean_subj = html.escape(subj)
+        clean_title = html.escape(job_title)
+
+        entry_lines = [
+            f"<b>{i}. {clean_comp}</b>" + (f" — {clean_title}" if clean_title and clean_title != clean_subj else ""),
+            f"📅 <b>Date :</b> {date_str}",
+            f"📬 <b>Objet :</b> {clean_subj}",
+        ]
+        if e.get("sender_name") or e.get("sender"):
+            contact = html.escape(e.get("sender_name") or e.get("sender"))
+            entry_lines.append(f"👤 <b>Expéditeur :</b> {contact}")
+        if summary:
+            clean_summary = html.escape(re.sub(r"\s+", " ", summary).strip()[:200])
+            entry_lines.append(f"💬 <i>{clean_summary}</i>")
+
+        cards.append("\n".join(entry_lines))
+
+    full_text = "\n\n───────────────\n\n".join(cards)
+    if len(full_text) < 4000:
+        await update.effective_message.reply_text(
+            full_text, parse_mode=ParseMode.HTML, disable_web_page_preview=True
+        )
+    else:
+        header = cards[0]
+        current_chunk = [header]
+        current_len = len(header)
+        for item in cards[1:]:
+            if current_len + len(item) + 20 > 3800:
+                await context.bot.send_message(
+                    chat_id, "\n\n───────────────\n\n".join(current_chunk),
+                    parse_mode=ParseMode.HTML, disable_web_page_preview=True
+                )
+                current_chunk = []
+                current_len = 0
+            current_chunk.append(item)
+            current_len += len(item) + 20
+        if current_chunk:
+            await context.bot.send_message(
+                chat_id, "\n\n───────────────\n\n".join(current_chunk),
+                parse_mode=ParseMode.HTML, disable_web_page_preview=True
+            )
+
+
+async def confirmee_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Affiche le détail des candidatures confirmées / accusés de réception."""
+    await _send_classified_report(
+        update, context, "confirmation", "📨", "Candidatures confirmées / En cours"
+    )
+
+
+async def refus_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Affiche le détail et dates des réponses négatives reçues."""
+    await _send_classified_report(
+        update, context, "rejection", "❌", "Refus reçus"
+    )
+
+
+DEFAULT_JOB_LOCATIONS = ["Bourges", "Saint-Doulchard"]
+DEFAULT_JOB_DISPLAY = "Bourges & Saint-Doulchard"
+
+
 async def job_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Jobs étudiants + missions intérim actuellement dispo (défaut : Bourges).
+    """Jobs étudiants + missions intérim en direct depuis Indeed.
+    Défaut : Bourges et Saint-Doulchard.
     Usage : /job  ou  /job Orléans"""
     if not _authorized(update):
         return await _deny(update)
-    ville = " ".join(context.args).strip() if context.args else "Bourges"
+
+    raw_arg = " ".join(context.args).strip() if context.args else ""
+    norm_arg = raw_arg.lower()
+
+    if not raw_arg or any(k in norm_arg for k in ("bourges", "saint-doulchard", "saint doulchard", "doulchard")):
+        villes = list(DEFAULT_JOB_LOCATIONS)
+        display_ville = DEFAULT_JOB_DISPLAY
+    else:
+        villes = [raw_arg]
+        display_ville = raw_arg
+
     chat_id = update.effective_chat.id
-    await context.bot.send_message(
-        chat_id, f"🔎 Recherche jobs étudiants + missions intérim à {html.escape(ville)}…")
-    from applypilot.discovery import hellowork
-    etu = await asyncio.to_thread(hellowork.search_live, "job étudiant", ville, "", 1, 10)
-    inter = await asyncio.to_thread(hellowork.search_live, "", ville, "Travail_temp", 1, 10)
-    await _send_job_list(context.bot, chat_id, f"🎓 Jobs étudiants — {ville}", etu)
-    await _send_job_list(context.bot, chat_id, f"🛠️ Missions intérim — {ville}", inter)
+    try:
+        await context.bot.send_message(
+            chat_id, f"🔎 Recherche jobs étudiants + missions intérim Indeed à {html.escape(display_ville)}…")
+    except Exception as exc:
+        log.warning("Notification initiale job_cmd : %s", exc)
+
+    from applypilot.discovery import indeed_student
+
+    # Recherche Indeed sur chaque secteur (Bourges et Saint-Doulchard par défaut)
+    etu_lists = []
+    inter_lists = []
+    for v in villes:
+        try:
+            res_etu = await asyncio.to_thread(indeed_student.search_student_jobs, v, 10)
+            if res_etu:
+                etu_lists.append(res_etu)
+        except Exception as exc:
+            log.warning("Jobs étudiants Indeed échoués pour %s : %s", v, exc)
+
+        try:
+            res_inter = await asyncio.to_thread(indeed_student.search_interim_jobs, v, 10)
+            if res_inter:
+                inter_lists.append(res_inter)
+        except Exception as exc:
+            log.warning("Missions intérim Indeed échouées pour %s : %s", v, exc)
+
+    # Fusion, déduplication et tri strict (<= 7 jours, sorties le jour même en tête)
+    etu = indeed_student.sort_offers(_merge_student_jobs(*etu_lists), sort="date", max_age_days=7)
+    inter = indeed_student.sort_offers(_merge_student_jobs(*inter_lists), sort="date", max_age_days=7)
+
+    try:
+        await _send_job_list(context.bot, chat_id, f"🎓 Jobs étudiants (Indeed) — {display_ville}", etu[:10])
+        await _send_job_list(context.bot, chat_id, f"🛠️ Missions intérim (Indeed) — {display_ville}", inter[:10])
+    except Exception as exc:
+        log.warning("Envoi job_list échoué : %s", exc)
+
+    if not etu and not inter:
+        try:
+            await context.bot.send_message(
+                chat_id,
+                f"⚠️ Aucune offre récente (< 7 jours) trouvée sur Indeed pour <b>{html.escape(display_ville)}</b>.\n"
+                "💡 <i>Astuce : tu peux chercher sur une plus grande ville à proximité, par exemple : "
+                "<code>/job Orléans</code>, <code>/job Tours</code> ou <code>/job Paris</code>.</i>",
+                parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -406,9 +1102,18 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             log.warning("jobapply lancement navigateur : %s", exc)
         parts = []
         if opened:
-            parts.append("🖥️ <b>Sur ton PC</b> : la fenêtre s'ouvre avec un bouton "
-                         "<b>« 📝 Compléter le formulaire »</b> en haut — clique-le "
-                         "pour remplir avec ton CV job étudiant.")
+            _is_indeed_job = any(h in url for h in
+                                 ("indeed.com", "indeed.fr", "fr.indeed.com"))
+            if _is_indeed_job:
+                parts.append(
+                    "🖥️ <b>Indeed</b> : offre ouverte dans ton Chrome réel "
+                    "(sans flag automation → pas de blocage Cloudflare). "
+                    "Téléverse le CV ci-dessus dans le formulaire."
+                )
+            else:
+                parts.append("🖥️ <b>Sur ton PC</b> : la fenêtre s'ouvre avec un bouton "
+                             "<b>« 📝 Compléter le formulaire »</b> en haut — clique-le "
+                             "pour remplir avec ton CV job étudiant.")
         parts.append(f'📱 <b>Sur ton téléphone</b> : ouvre l\'offre et postule à la '
                      f'main (CV ci-dessus) → <a href="{html.escape(url)}">lien de l\'offre</a>')
         parts.append("Connexion/CAPTCHA = à toi.")
@@ -456,10 +1161,23 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
         msg = ["✅ <b>Candidature prête.</b>"]
         if opened:
-            msg.append("🖥️ <b>Sur ton PC</b> : la fenêtre s'ouvre avec un bouton "
-                       "<b>« 📝 Compléter le formulaire »</b> en haut. Connecte-toi "
-                       "si besoin, clique-le pour tout remplir (champs + CV), "
-                       "vérifie et clique Postuler.")
+            res_status = getattr(opened, "get", lambda k, d=None: None)
+            # Adapter le message selon la source (Indeed → CDP = vrai Chrome + auto-complétion)
+            _target = row.get("application_url") or row.get("url") or ""
+            _is_indeed = any(h in _target for h in
+                             ("indeed.com", "indeed.fr", "fr.indeed.com"))
+            if _is_indeed:
+                msg.append(
+                    "🖥️ <b>Indeed (mode CDP)</b> : offre ouverte dans ton <b>vrai Chrome</b> "
+                    "→ Cloudflare ne bloque pas. Clique le bouton "
+                    "<b>« 📝 Compléter le formulaire »</b> en haut pour remplir "
+                    "automatiquement les champs et téléverser le CV."
+                )
+            else:
+                msg.append("🖥️ <b>Sur ton PC</b> : la fenêtre s'ouvre avec un bouton "
+                           "<b>« 📝 Compléter le formulaire »</b> en haut. Connecte-toi "
+                           "si besoin, clique-le pour tout remplir (champs + CV), "
+                           "vérifie et clique Postuler.")
         msg.append(f'📱 <b>Sur ton téléphone</b> : ouvre l\'offre et postule à la '
                    f'main (le CV est juste au-dessus) → '
                    f'<a href="{html.escape(link)}">lien de l\'offre</a>')
@@ -510,19 +1228,36 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Veille automatique (toutes les N minutes) : HelloWork -> score -> NOUVELLES
-# offres seulement (sans re-spammer celles déjà envoyées).
+# Veille automatique : HelloWork à chaque cycle (CYCLE_MINUTES), Indeed toutes
+# les INDEED_CYCLE_HOURS (plus lourd → cadence plus lente). Puis score, puis
+# envoi des NOUVELLES offres seulement (sans re-spammer celles déjà envoyées).
 # ---------------------------------------------------------------------------
+def _sources_for_tick(tick: int, indeed_every: int) -> list[str]:
+    """Sources à scraper pour ce cycle de veille. HelloWork à chaque cycle ;
+    Indeed un cycle sur `indeed_every` (≈ toutes les 2 h par défaut)."""
+    sources = ["hellowork"]
+    if indeed_every <= 1 or tick % indeed_every == 0:
+        sources.append("indeed")
+    return sources
+
+
 async def _auto_cycle(context: ContextTypes.DEFAULT_TYPE) -> None:
     if not context.application.bot_data.get("auto_search", True):
         return
     if context.application.bot_data.get("_cycle_busy"):
         return  # un cycle précédent tourne encore
     context.application.bot_data["_cycle_busy"] = True
+    # Compteur de cycles (persiste tant que le bot tourne) : décide quand Indeed
+    # est inclus. Incrémenté tout de suite pour ne pas rester bloqué sur Indeed.
+    tick = int(context.application.bot_data.get("_tick", 0))
+    context.application.bot_data["_tick"] = tick + 1
     try:
         from applypilot import pipeline
+        sources = _sources_for_tick(tick, _INDEED_EVERY_TICKS)
         try:
-            await asyncio.to_thread(pipeline._run_discover, 1, ["hellowork"])
+            # _run_discover isole chaque source dans son propre try/except :
+            # une erreur Indeed ne casse pas HelloWork.
+            await asyncio.to_thread(pipeline._run_discover, 1, sources)
             await asyncio.to_thread(pipeline._run_score)
         except Exception as exc:
             log.exception("Veille auto (discover/score) : %s", exc)
@@ -537,22 +1272,71 @@ async def _auto_cycle(context: ContextTypes.DEFAULT_TYPE) -> None:
         for row in new:
             await _send_offer(context.bot, OWNER_ID, row)
         await asyncio.to_thread(bot_core.mark_notified, [o["url"] for o in new])
+
+        # Surveillance automatique des réponses Gmail (toutes les ~30 min)
+        if tick % 3 == 0:
+            try:
+                from applypilot.tracking.gmail_client import check_gmail_setup
+                ok, _ = check_gmail_setup()
+                if ok:
+                    from applypilot.tracking import run_tracking
+                    res = await asyncio.to_thread(run_tracking, days=7, ghosted_days=7, dry_run=False)
+                    for ev in res.get("new_events", []):
+                        if ev.get("type") in ("interview", "offer", "rejection"):
+                            card = _format_tracking_event(ev)
+                            if card:
+                                await context.bot.send_message(OWNER_ID, card, parse_mode=ParseMode.HTML)
+            except Exception as exc:
+                log.warning("Veille Gmail tracking échouée : %s", exc)
     finally:
         context.application.bot_data["_cycle_busy"] = False
 
 
 # ---------------------------------------------------------------------------
+async def _post_init(app: Application) -> None:
+    from applypilot.tracking import tracer
+    await tracer.start_tracer_server(bot=app.bot)
+
+
+async def _post_shutdown(app: Application) -> None:
+    from applypilot.tracking import tracer
+    await tracer.stop_tracer_server()
+
+
 def build_application() -> Application:
-    app = Application.builder().token(TOKEN).build()
+    app = (
+        Application.builder()
+        .token(TOKEN)
+        .read_timeout(30.0)
+        .write_timeout(30.0)
+        .connect_timeout(30.0)
+        .pool_timeout(30.0)
+        .post_init(_post_init)
+        .post_shutdown(_post_shutdown)
+        .build()
+    )
     app.bot_data["auto_search"] = True
     app.add_handler(CommandHandler("start", start_cmd))
+    app.add_handler(CommandHandler("commandes", commandes_cmd))
+    app.add_handler(CommandHandler("commande", commandes_cmd))
+    app.add_handler(CommandHandler("help", commandes_cmd))
+    app.add_handler(CommandHandler("aide", commandes_cmd))
+    app.add_handler(CommandHandler("scan", scan_cmd))
     app.add_handler(CommandHandler("search", search_cmd))
     app.add_handler(CommandHandler("offres", offres_cmd))
+    app.add_handler(CommandHandler("offre", offres_cmd))
     app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(CommandHandler("pause", pause_cmd))
     app.add_handler(CommandHandler("resume", resume_cmd))
     app.add_handler(CommandHandler("clean", clean_cmd))
     app.add_handler(CommandHandler("job", job_cmd))
+    app.add_handler(CommandHandler("jobs", job_cmd))
+    app.add_handler(CommandHandler("trackers", trackers_cmd))
+    app.add_handler(CommandHandler("tracker", trackers_cmd))
+    app.add_handler(CommandHandler("track", track_cmd))
+    app.add_handler(CommandHandler("confirmees", confirmee_cmd))
+    app.add_handler(CommandHandler("confirmee", confirmee_cmd))
+    app.add_handler(CommandHandler("refus", refus_cmd))
     app.add_handler(CommandHandler("done", done_cmd))
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
@@ -578,7 +1362,7 @@ def main() -> None:
             "(demande ton ID à @userinfobot sur Telegram).")
     app = build_application()
     log.info("ApplyPilot Telegram — démarrage (owner=%s)", OWNER_ID)
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    app.run_polling(allowed_updates=Update.ALL_TYPES, bootstrap_retries=-1)
 
 
 if __name__ == "__main__":
