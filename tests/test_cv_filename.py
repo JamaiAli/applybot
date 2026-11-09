@@ -4,58 +4,42 @@ from pypdf import PdfReader
 from applypilot.cv_latex import build_cv_filename, generate_cv
 
 
-def test_build_cv_filename_nominal():
-    offer = {
-        "title": "Stage - Auditeur Cybersécurité & Conformité GRC",
-        "company": "Vinci Energies",
-    }
-    filename = build_cv_filename(offer, candidate_name="Ali Jamai")
-    assert filename == "CV_Ali_Jamai_Vinci_Energies_Stage_Auditeur_Cybersecurite_Conformite_GRC"
+SAMPLE_OFFERS = [
+    ({"title": "STAGE - Ingénieur Cybersécurité GRC F/H", "company": "Thales"}, "CV_Ali_Jamai_GRC"),
+    ({"title": "Stage - Pentester Evaluation LLM F/H (2026-54964)", "company": "Orange"}, "CV_Ali_Jamai_Pentest"),
+    ({"title": "Stage - Auditeur Cybersécurité & Conformité GRC", "company": "Vinci Energies"}, "CV_Ali_Jamai_Audit"),
+    ({"title": "Analyste Cybersecurite - IT (Systèmes d'information)", "company": "Thales"}, "CV_Ali_Jamai_Cyber"),
+    ({"title": "Stage - Ingénieur Réseaux & Cybersécurité H/F", "company": "Sopra Steria"}, "CV_Ali_Jamai_Reseau"),
+    ({"title": "Devops Cloud Infra", "company": "Wavestone"}, "CV_Ali_Jamai_DevOps"),
+    ({"title": "Stage Déploiement Active Directory", "company": "Capgemini"}, "CV_Ali_Jamai_AD"),
+    ({"title": "Analyste SOC Détection & Réponse aux Incidents", "company": "Thales"}, "CV_Ali_Jamai_SOC"),
+    ({"title": "Stage IA et Cybersécurité", "company": "Airbus"}, "CV_Ali_Jamai_IA"),
+    ({"title": "Stage Cryptographie Appliquée", "company": "ANSSI"}, "CV_Ali_Jamai_Cryptogr"),
+    ({"title": "", "company": ""}, "CV_Ali_Jamai_Cyber"),
+]
 
 
-def test_build_cv_filename_strips_gender_and_codes():
-    offer = {
-        "title": "Stage - Pentester Evaluation LLM F/H (2026-54964)",
-        "company": "Orange",
-    }
-    filename = build_cv_filename(offer, candidate_name="Ali Jamai")
-    assert filename == "CV_Ali_Jamai_Orange_Stage_Pentester_Evaluation_LLM"
-    assert "F_H" not in filename
-    assert "2026" not in filename
+@pytest.mark.parametrize("offer, expected_base", SAMPLE_OFFERS)
+def test_build_cv_filename_short_and_ats_safe(offer, expected_base):
+    filename = build_cv_filename(offer)
+    assert filename == expected_base
+    full_pdf_name = f"{filename}.pdf"
+    # Doit être STRICTEMENT <= 25 caractères pour être accepté partout sans exception (Thales/Workday, etc.)
+    assert len(full_pdf_name) <= 25, f"Filename {full_pdf_name} est trop long ({len(full_pdf_name)} car > 25)"
 
 
-def test_build_cv_filename_no_company_duplication():
-    offer = {
-        "title": "Stage Cybersécurité Offensive chez Airbus",
-        "company": "Airbus",
-    }
-    filename = build_cv_filename(offer, candidate_name="Ali Jamai")
-    # Airbus déjà présent dans le titre -> pas de doublon "Airbus_..._Airbus"
-    assert filename.count("Airbus") == 1
-    assert filename == "CV_Ali_Jamai_Stage_Cybersecurite_Offensive_chez_Airbus"
-
-
-def test_build_cv_filename_without_company():
-    offer = {
-        "title": "Stage - Analyste VOC - Cybersécurité - Toulouse H/F",
-        "company": "",
-    }
-    filename = build_cv_filename(offer, candidate_name="Ali Jamai")
-    assert filename == "CV_Ali_Jamai_Stage_Analyste_VOC_Cybersecurite_Toulouse"
-
-
-def test_generate_cv_uses_offer_name(monkeypatch):
+def test_generate_cv_short_filename(monkeypatch):
     import applypilot.cv_latex as cv_mod
     monkeypatch.setattr(cv_mod, "_llm_selection", lambda off, exp_data: None)
 
     offer = {
-        "title": "Stage - Pentester Sécurité Offensive",
-        "company": "Wavestone",
-        "location": "Paris",
-        "description": "Pentest web et interne AD",
+        "title": "STAGE - Ingénieur Cybersécurité GRC F/H",
+        "company": "Thales",
+        "location": "Vélizy",
+        "description": "Analyse de risques ISO 27001 et GRC",
     }
     pdf_path = generate_cv(offer)
     assert pdf_path.exists()
-    assert pdf_path.name.startswith("CV_Ali_Jamai_Wavestone_Stage_Pentester_Securite_Offensive")
-    assert pdf_path.suffix == ".pdf"
+    assert pdf_path.name == "CV_Ali_Jamai_GRC.pdf"
+    assert len(pdf_path.name) <= 25
     assert len(PdfReader(str(pdf_path)).pages) == 1

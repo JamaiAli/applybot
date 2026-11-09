@@ -674,51 +674,45 @@ def _compile(tex_path: Path) -> Path:
 
 
 def build_cv_filename(offer: dict, candidate_name: str | None = None) -> str:
-    """Génère un nom de fichier propre au nom de l'offre (titre + entreprise),
-    conforme aux standards ATS et exempt de caractères interdits sous Windows.
-    Exemple: CV_Ali_Jamai_Vinci_Energies_Stage_Auditeur_Cybersecurite.pdf
+    """Génère un nom de fichier court et percutant basé sur l'offre,
+    strictement limité à <= 25 caractères (.pdf inclus) pour être accepté
+    sans exception par tous les portails ATS (Workday/Thales, Taleo, etc.).
+    Exemples : CV_Ali_Jamai_Cyber.pdf (22 car.), CV_Ali_Jamai_Audit.pdf (22 car.)
     """
     import unicodedata
 
-    raw_title = str(offer.get("title") or "Stage Cybersécurité").strip()
-    raw_comp = str(offer.get("company") or "").strip()
-    if not raw_comp or raw_comp.lower() in ("indeed", "hellowork", "inconnu", "unknown", "confidentiel", "entreprise", "none"):
-        site = str(offer.get("site") or "").strip()
-        if site and site.lower() not in ("indeed", "hellowork", "inconnu", "unknown", "site"):
-            raw_comp = site
-        else:
-            raw_comp = ""
+    raw_title = str(offer.get("title") or "").lower()
+    norm_title = unicodedata.normalize("NFKD", raw_title).encode("ascii", "ignore").decode("ascii")
 
-    def clean(s: str) -> str:
-        # Supprime les mentions légales de genre (H/F, F/H, etc.)
-        s = re.sub(r"\b[HhFfMmXx]\s*[/|\\-]\s*[HhFfMmXx](?:\s*[/|\\-]\s*[HhFfMmXx])?\b", "", s)
-        s = re.sub(r"\([HhFfMmXx\s/|\\-]+\)", "", s)
-        # Supprime les identifiants ou numéros d'offre entre parenthèses
-        s = re.sub(r"[\(\[\{][A-Za-z0-9_\-\s:]{3,}[\)\]\}]", "", s)
-        # Normalise les accents ASCII
-        s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
-        # Remplace la ponctuation par des underscores
-        s = re.sub(r"[^A-Za-z0-9]+", "_", s)
-        return s.strip("_")
+    # Détection du domaine clé de l'offre (termes courts et ciblés)
+    tag = None
+    if "audit" in norm_title:
+        tag = "Audit"
+    elif "pentest" in norm_title or "offensiv" in norm_title or "intrusion" in norm_title:
+        tag = "Pentest"
+    elif "grc" in norm_title or "gouvernance" in norm_title or "conformit" in norm_title:
+        tag = "GRC"
+    elif "soc" in norm_title or "incident" in norm_title or "detection" in norm_title:
+        tag = "SOC"
+    elif "devops" in norm_title or "devsecops" in norm_title or "sre" in norm_title:
+        tag = "DevOps"
+    elif "active directory" in norm_title or re.search(r"\bad\b", norm_title) or "identit" in norm_title or "iam" in norm_title:
+        tag = "AD"
+    elif "reseau" in norm_title or "telecom" in norm_title:
+        tag = "Reseau"
+    elif "cloud" in norm_title or "azure" in norm_title or "aws" in norm_title:
+        tag = "Cloud"
+    elif re.search(r"\bia\b", norm_title) or "llm" in norm_title or "intelligence artificielle" in norm_title:
+        tag = "IA"
+    elif "cyber" in norm_title or "securit" in norm_title or "ssi" in norm_title:
+        tag = "Cyber"
 
-    comp_slug = clean(raw_comp)
-    title_slug = clean(raw_title)
+    if not tag:
+        clean = re.sub(r"\b(stage|stagiaire|ingenieur|ingenieure|h/f|f/h|m/f|de|du|en|pour|et|le|la|un|une)\b", "", norm_title)
+        words = re.findall(r"[a-z]{3,}", clean)
+        tag = words[0].capitalize()[:8] if words else "Cyber"
 
-    if not candidate_name:
-        candidate_name = "Ali Jamai"
-    cand_slug = clean(candidate_name)
-
-    # Tronque à 7 mots significatifs max pour éviter les chemins trop longs
-    title_words = [w for w in title_slug.split("_") if w]
-    title_short = "_".join(title_words[:7])
-
-    parts = ["CV", cand_slug]
-    if comp_slug and comp_slug.lower() not in title_short.lower():
-        parts.append(comp_slug)
-    if title_short:
-        parts.append(title_short)
-
-    return "_".join(p for p in parts if p) or "CV_Ali_Jamai"
+    return f"CV_Ali_Jamai_{tag}"
 
 
 def generate_cv(offer: dict, out_name: str | None = None) -> Path:
