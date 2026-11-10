@@ -282,7 +282,7 @@ def fetch_pending_offers(min_score: int = MIN_SCORE, limit: int = MAX_CARDS,
         f"""
         SELECT url, title, company, site, source, domaines, strategy, location,
                fit_score, score_reasoning, application_url,
-               tailored_resume_path, cover_letter_path, posted_at
+               tailored_resume_path, cover_letter_path, posted_at, user_note
         FROM jobs
         WHERE fit_score IS NOT NULL
           AND fit_score >= ?
@@ -335,7 +335,7 @@ def fetch_new_scan_offers(new_urls: list[str], min_score: int = MIN_SCORE,
         f"""
         SELECT url, title, company, site, source, domaines, strategy, location,
                fit_score, score_reasoning, application_url,
-               tailored_resume_path, cover_letter_path, posted_at
+               tailored_resume_path, cover_letter_path, posted_at, user_note
         FROM jobs
         WHERE fit_score IS NOT NULL
           AND fit_score >= ?
@@ -363,7 +363,7 @@ def fetch_one(url: str) -> dict | None:
     conn.row_factory = sqlite3.Row
     r = conn.execute(
         """SELECT url, title, company, site, location, fit_score, score_reasoning,
-                  application_url, tailored_resume_path, cover_letter_path, apply_status
+                  application_url, tailored_resume_path, cover_letter_path, apply_status, user_note
            FROM jobs WHERE url = ?""",
         (url,),
     ).fetchone()
@@ -374,7 +374,10 @@ def set_apply_status(url: str, status: str, note: str | None = None) -> None:
     """Enregistre une décision utilisateur et reflète l'état dans la machine à
     états. `status` ∈ {validated, ignored, edit_requested}."""
     conn = get_connection()
-    execute_write(conn, "UPDATE jobs SET apply_status = ? WHERE url = ?", (status, url))
+    if note is not None:
+        execute_write(conn, "UPDATE jobs SET apply_status = ?, user_note = ? WHERE url = ?", (status, note, url))
+    else:
+        execute_write(conn, "UPDATE jobs SET apply_status = ? WHERE url = ?", (status, url))
     to_state = {"validated": "ready_to_apply", "ignored": "archived",
                 "applied": "applied"}.get(status)
     if to_state:

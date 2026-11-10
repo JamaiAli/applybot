@@ -413,6 +413,7 @@ _ALL_COLUMNS: dict[str, str] = {
     # Human-in-the-Loop (HITL) apply
     "needs_human_reason": "TEXT",
     "needs_human_url": "TEXT",
+    "user_note": "TEXT",
     "needs_human_instructions": "TEXT",
     # Apply category (semantic classification of apply outcome)
     # DEPRECATED 2026-04-24: consolidated into the `state` column. Kept for

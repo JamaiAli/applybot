@@ -325,6 +325,32 @@ def _render_xp_block(exp: dict, max_bullets: int = 3) -> str:
     return "\n".join(lines)
 
 
+def _extract_custom_title(note: str | None) -> str | None:
+    """Extrait un intitulé de poste cible à partir de la consigne utilisateur."""
+    if not note:
+        return None
+    note_clean = str(note).strip().strip("«»\"'")
+    # 1. Format explicite : titre cv : ..., titre : ..., intitulé : ...
+    m = re.search(
+        r"(?:titre[\s_-]*(?:du[\s_-]*)?cv|titre|intitul[ée])\s*[:=-]\s*([^\n\r]+)",
+        note_clean,
+        re.IGNORECASE,
+    )
+    if m:
+        return m.group(1).strip().strip("«»\"'")
+
+    # 2. Si la consigne est directement un nom de poste court (sans verbes de consigne technique)
+    action_verbs = {"insister", "retirer", "mettre", "ajouter", "supprimer", "changer", "enlever", "modifier", "focus"}
+    words = note_clean.lower().split()
+    if len(words) <= 7 and not any(w in words for w in action_verbs):
+        if words[0].startswith("stage") or any(k in note_clean.lower() for k in [
+            "cyber", "audit", "pentest", "securit", "devops", "cloud", "reseau", "analys", "ingénieur", "grc", "soc"
+        ]):
+            return note_clean
+
+    return None
+
+
 def _render_tex(exp_data: dict, selection: dict, offer: dict,
                 max_exp: int = 7, max_bullets: int = 2) -> str:
     cand = exp_data["candidate"]
@@ -417,12 +443,20 @@ def _render_tex(exp_data: dict, selection: dict, offer: dict,
     elif not loisirs.endswith("."):
         loisirs += "."
 
-    # Titre du bandeau cible (clean, uppercase ATS)
-    raw_title = offer.get("title") or "AUDIT CYBERSÉCURITÉ & GRC"
-    clean_title = re.sub(r"\b(F/H|H/F|M/F|H/X)\b", "", raw_title, flags=re.IGNORECASE)
-    clean_title = re.sub(r"\(\d+[-_]?\d*\)", "", clean_title)
-    clean_title = re.sub(r"^\s*stage\s*[-–—:]?\s*", "", clean_title, flags=re.IGNORECASE).strip()
-    clean_title = re.sub(r"\s+", " ", clean_title).strip()
+    # Titre du bandeau cible (prise en compte prioritaire de la consigne utilisateur)
+    user_note = offer.get("user_note") or offer.get("note")
+    custom_title = offer.get("custom_title") or _extract_custom_title(user_note)
+    if custom_title:
+        clean_title = re.sub(r"\b(F/H|H/F|M/F|H/X)\b", "", custom_title, flags=re.IGNORECASE)
+        clean_title = re.sub(r"\(\d+[-_]?\d*\)", "", clean_title)
+        clean_title = re.sub(r"^\s*stage\s*[-–—:]?\s*", "", clean_title, flags=re.IGNORECASE).strip()
+        clean_title = re.sub(r"\s+", " ", clean_title).strip()
+    else:
+        raw_title = offer.get("title") or "AUDIT CYBERSÉCURITÉ & GRC"
+        clean_title = re.sub(r"\b(F/H|H/F|M/F|H/X)\b", "", raw_title, flags=re.IGNORECASE)
+        clean_title = re.sub(r"\(\d+[-_]?\d*\)", "", clean_title)
+        clean_title = re.sub(r"^\s*stage\s*[-–—:]?\s*", "", clean_title, flags=re.IGNORECASE).strip()
+        clean_title = re.sub(r"\s+", " ", clean_title).strip()
     if not clean_title:
         clean_title = "AUDIT CYBERSÉCURITÉ & GRC"
     candidature = f"STAGE --- {latex_escape(clean_title.upper())}"
@@ -681,7 +715,9 @@ def build_cv_filename(offer: dict, candidate_name: str | None = None) -> str:
     """
     import unicodedata
 
-    raw_title = str(offer.get("title") or "").lower()
+    user_note = offer.get("user_note") or offer.get("note")
+    custom_title = offer.get("custom_title") or _extract_custom_title(user_note)
+    raw_title = str(custom_title or offer.get("title") or "").lower()
     norm_title = unicodedata.normalize("NFKD", raw_title).encode("ascii", "ignore").decode("ascii")
 
     # Détection du domaine clé de l'offre (termes courts et ciblés)

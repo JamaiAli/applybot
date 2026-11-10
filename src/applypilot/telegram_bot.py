@@ -1277,8 +1277,22 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     note = (update.message.text or "").strip()[:500]
     bot_core.set_apply_status(url, "edit_requested", note=note)
     await update.message.reply_text(
-        f"✏️ Noté : « {note} »\nLe CV/lettre sera régénéré avec cette "
-        "consigne au prochain passage.")
+        f"✏️ Noté : « {note} »\n"
+        "⏳ Régénération immédiate de ton CV adapté avec cette consigne… (~10 s)")
+
+    row = bot_core.fetch_one(url) or {}
+    row["user_note"] = note
+    try:
+        from applypilot import cv_latex
+        pdf = await asyncio.to_thread(cv_latex.generate_cv, row)
+        bot_core.set_cv_path(url, str(pdf))
+        with open(pdf, "rb") as fh:
+            await context.bot.send_document(
+                update.message.chat_id, InputFile(fh, filename=pdf.name),
+                caption="📄 Ton CV adapté mis à jour avec ta consigne (1 page).")
+    except Exception as exc:
+        log.exception("Régénération immédiate CV échouée : %s", exc)
+        await update.message.reply_text(f"⚠️ Échec de la régénération du CV : {exc}")
 
 
 # ---------------------------------------------------------------------------
