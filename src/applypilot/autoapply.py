@@ -98,13 +98,20 @@ def _field_values(p: dict) -> list[tuple[re.Pattern, str]]:
         r"(github)": pers.get("github_url", ""),
         r"(portfolio|site[\s_-]*web|website|site perso)": pers.get("portfolio_url", ""),
         r"(nationalit[ée]|nationality|citoyennet[ée]|citizenship)": pers.get("nationality", "Marocaine"),
-        r"(\b[eé]cole\b|\bschool\b|\b[eé]tablissement\b|\binstitution\b|\buniversit[eé]\b)": edu.get("school", "insa centre val de loire"),
-        r"(\bdipl[oô]me\b|\bdegree\b|\bdiploma\b)": edu.get("degree", "cybersécurité"),
-        r"(sp[ée]cialit[ée]|field[\s_-]*of[\s_-]*study|major)": edu.get("specialite", "cybersécurité"),
-        r"(date[\s_-]*(?:de[\s_-]*)?d[ée]but|start[\s_-]*date)": edu.get("start_date", "01/09/2023"),
-        r"(date[\s_-]*(?:de[\s_-]*)?fin|end[\s_-]*date|graduation[\s_-]*date)": edu.get("end_date", "01/05/2028"),
+        r"(quel[\s_-]*[ée]tablissement|[ée]tablissement.*inscrit|inscrit.*[ée]tablissement|\b[eé]tablissement\b|\b[eé]cole\b|\bschool\b|\binstitution\b|\buniversit[eé]\b)": edu.get("school", "INSA Centre Val de Loire"),
+        r"([àa]\s*partir\s*de\s*quand.*disponible|disponible.*d[ée]but|date.*d[ée]but.*stage|d[ée]but.*stage|start.*date.*internship)": "Je suis disponible pour débuter mon stage à partir du 5 avril 2027 pour une durée de 4 à 6 mois.",
+        r"(jusqu.*quand.*disponible|d[ée]marrage.*stage|date.*limite.*d[ée]marrage|fin.*d[ée]marrage)": "Je suis disponible pour le démarrage de mon stage jusqu'en septembre 2027 au plus tard.",
+        r"(convention.*stage|disposerez.*convention|b[ée]n[ée]ficierez.*convention)": "Oui, je disposerai d'une convention de stage délivrée par mon école (l'INSA Centre Val de Loire) pour toute la durée du stage.",
+        r"(type.*stage|nature.*stage)": "Stage élève-ingénieur (Fin de Master 1 / Césure 1ère partie - Bac+4/5 à l'INSA Centre Val de Loire).",
+        r"(dur[ée]e.*stage|duration.*internship)": "Je recherche un stage d'une durée de 4 à 6 mois.",
+        r"(\bdipl[oô]me\b|\bdegree\b|\bdiploma\b)": edu.get("degree", "Diplôme d'ingénieur en Cybersécurité"),
+        r"(sp[ée]cialit[ée]|field[\s_-]*of[\s_-]*study|major)": edu.get("specialite", "Cybersécurité"),
+        r"(date[\s_-]*(?:de[\s_-]*)?d[ée]but.*formation|start[\s_-]*date.*education)": edu.get("start_date", "01/09/2023"),
+        r"(date[\s_-]*(?:de[\s_-]*)?fin.*formation|end[\s_-]*date.*education|graduation[\s_-]*date)": edu.get("end_date", "01/05/2028"),
         r"(formation[\s_-]*en[\s_-]*cours|currently[\s_-]*enrolled|is[\s_-]*current)": edu.get("is_current", "Yes"),
-        r"(ville|habitez|city|localit[ée]|lieu)": pers.get("city", "bourges"),
+        r"(pr[ée]tention|salaire|salary|compensation|remun[ée]ration|gratification)": "Selon la grille légale de rémunération des stagiaires en vigueur au sein de l'entreprise.",
+        r"(mobilit[ée]|d[ée]placement|relocat)": "Je suis totalement mobile sur l'ensemble de la France, avec une préférence pour l'Île-de-France et la région Centre-Val de Loire.",
+        r"(ville|habitez|city|localit[ée]|lieu)": pers.get("city", "Bourges"),
     }
     return [(re.compile(k, re.I), v) for k, v in pairs.items() if v]
 
@@ -236,25 +243,53 @@ _JS_LABELS = r"""
 () => {
   const els = [...document.querySelectorAll('input, textarea')];
   return els.map((el, idx) => {
-    let label = el.getAttribute('aria-label') || '';
-    if (!label && el.id) {
-      const l = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
-      if (l) label = l.innerText || '';
+    let parts = [];
+    const al = el.getAttribute('aria-label'); if (al) parts.push(al);
+    const ph = el.getAttribute('placeholder'); if (ph) parts.push(ph);
+    const alb = el.getAttribute('aria-labelledby');
+    if (alb) {
+      alb.split(/\s+/).forEach(id => {
+        const t = document.getElementById(id);
+        if (t && t.innerText) parts.push(t.innerText);
+      });
     }
-    if (!label) { const l = el.closest('label'); if (l) label = l.innerText || ''; }
-    if (!label) {
-      let node = el;
-      for (let i = 0; i < 4 && node; i++) {
-        node = node.parentElement;
-        if (node) {
-          const t = (node.innerText || '').trim();
-          if (t) { label = t.split('\n')[0]; break; }
+    if (el.id) {
+      try {
+        const l = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+        if (l && l.innerText) parts.push(l.innerText);
+      } catch (_e) {}
+    }
+    const pl = el.closest('label');
+    if (pl && pl.innerText) parts.push(pl.innerText);
+
+    let cur = el;
+    for (let d = 0; d < 4 && cur && cur !== document.body; d++) {
+      let prev = cur.previousElementSibling;
+      while (prev) {
+        const txt = (prev.innerText || '').trim();
+        if (txt && txt.length > 2 && txt.length < 300) { parts.push(txt); break; }
+        prev = prev.previousElementSibling;
+      }
+      cur = cur.parentElement;
+    }
+
+    let node = el.parentElement;
+    for (let i = 0; i < 6 && node && node !== document.body; i++) {
+      const cands = node.querySelectorAll('label, legend, h1, h2, h3, h4, h5, h6, [class*="question" i], [class*="title" i], [class*="label" i], p');
+      for (const c of cands) {
+        if (c !== el && !c.contains(el)) {
+          const t = (c.innerText || '').trim();
+          if (t && t.length > 2 && t.length < 300) { parts.push(t); break; }
         }
       }
+      if (parts.length > 2) break;
+      node = node.parentElement;
     }
-    label = (label || '') + ' ' + (el.name || '') + ' ' + (el.placeholder || '');
+
+    if (el.name) parts.push(el.name);
+    let label = parts.join(' ').slice(0, 300);
     const r = el.getBoundingClientRect();
-    return {idx, label: label.slice(0, 160),
+    return {idx, label: label,
             type: (el.type || el.tagName || '').toLowerCase(),
             visible: !!(r.width && r.height)};
   });

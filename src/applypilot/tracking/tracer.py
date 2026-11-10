@@ -362,6 +362,7 @@ def get_candidate_data(job_url: str | None = None) -> dict:
     postal = pers.get("postal_code", "18000")
     address = f"{city} ({postal}), France" if city and postal else (city or "France")
 
+    edu = p.get("education", {})
     return {
         "status": "ok",
         "personal": {
@@ -374,9 +375,20 @@ def get_candidate_data(job_url: str | None = None) -> dict:
             "city": city,
             "postal_code": postal,
             "country": pers.get("country", "France"),
+            "nationality": pers.get("nationality", "Marocaine"),
+            "citizenship": pers.get("citizenship", "Maroc"),
             "linkedin": pers.get("linkedin_url", "https://www.linkedin.com/in/ali-jamai-078602297"),
             "github": pers.get("github_url", "https://github.com/JamaiAli"),
             "portfolio": portfolio_url,
+        },
+        "education": {
+            "school": edu.get("school", "INSA Centre Val de Loire"),
+            "degree": edu.get("degree", "Diplôme d'ingénieur en Cybersécurité"),
+            "specialite": edu.get("specialite", "Cybersécurité"),
+            "start_date": edu.get("start_date", "01/09/2023"),
+            "end_date": edu.get("end_date", "01/05/2028"),
+            "is_current": edu.get("is_current", "Yes"),
+            "city": edu.get("city", "Bourges"),
         },
         "qa": qa,
         "has_cv": bool(cv_p and cv_p.exists()),
@@ -444,9 +456,33 @@ async def handle_smart_answer(request: web.Request) -> web.Response:
         (re.compile(r"handicap|rqth|disability", re.I), "handicap"),
     ]
 
+    sentence_answers = {
+        "convention_stage": "Oui, je disposerai d'une convention de stage délivrée par mon école (l'INSA Centre Val de Loire) pour toute la durée du stage.",
+        "date_debut_stage": "Je suis disponible pour débuter mon stage à partir du 5 avril 2027 pour une durée de 4 à 6 mois.",
+        "date_fin_demarrage_stage": "Je suis disponible pour le démarrage de mon stage jusqu'en septembre 2027 au plus tard.",
+        "etablissement": "INSA Centre Val de Loire",
+        "type_stage": "Stage élève-ingénieur (Fin de Master 1 / Césure 1ère partie - Bac+4/5 à l'INSA Centre Val de Loire).",
+        "duree_stage": "Je recherche un stage d'une durée de 4 à 6 mois (avril à août/septembre 2027).",
+        "disponibilite_stage": "Je suis disponible à partir du 5 avril 2027 pour une durée de 4 à 6 mois.",
+        "pretentions_salariales": "Selon la grille légale de rémunération des stagiaires en vigueur au sein de l'entreprise.",
+        "mobilite_geographique": "Je suis totalement mobile sur l'ensemble de la France, avec une préférence pour l'Île-de-France et la région Centre-Val de Loire.",
+        "permis_de_conduire": "Oui, je suis titulaire du permis B.",
+        "vehicule_personnel": "Non",
+        "nationalite": "Marocaine",
+        "teletravail": "Je suis disponible pour travailler sur site, en mode hybride ou en télétravail.",
+        "niveau_etudes": "Bac+4 (Élève-ingénieur en 4ème année à l'INSA Centre Val de Loire).",
+        "diplome_prepare": "Diplôme d'ingénieur en Cybersécurité (INSA Centre Val de Loire).",
+        "annee_diplome": "2028 (cursus ingénieur en 5 ans).",
+        "langues": "Français (langue maternelle) et Anglais (courant professionnel, score TOEIC 980/990).",
+        "source_offre": "LinkedIn",
+        "handicap": "Non concerné",
+    }
+
     for pat, key in qa_rules:
-        if pat.search(q_lower) and key in qa:
-            return web.json_response({"answer": qa[key], "source": "qa_bank"})
+        if pat.search(q_lower):
+            ans = sentence_answers.get(key) or qa.get(key)
+            if ans:
+                return web.json_response({"answer": ans, "source": "qa_bank"})
 
     # Recherche directe par nom de clé Q&A
     for k, v in qa.items():

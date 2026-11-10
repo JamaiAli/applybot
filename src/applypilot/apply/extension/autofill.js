@@ -94,31 +94,88 @@
   // Résolution du libellé d'un champ
   // -------------------------------------------------------------------------
   function getFieldLabel(el) {
-    let text = el.getAttribute('aria-label') || el.getAttribute('placeholder') || '';
+    if (!el) return '';
+    let parts = [];
+
+    // 1. Attributs directs
+    const ariaLabel = el.getAttribute('aria-label');
+    if (ariaLabel) parts.push(ariaLabel);
+    const placeholder = el.getAttribute('placeholder');
+    if (placeholder) parts.push(placeholder);
+    const title = el.getAttribute('title');
+    if (title) parts.push(title);
+
+    // 2. aria-labelledby & aria-describedby
+    const ariaLabelledBy = el.getAttribute('aria-labelledby');
+    if (ariaLabelledBy) {
+      ariaLabelledBy.split(/\s+/).forEach(id => {
+        const target = document.getElementById(id);
+        if (target && target.innerText) parts.push(target.innerText);
+      });
+    }
+    const ariaDescribedBy = el.getAttribute('aria-describedby');
+    if (ariaDescribedBy) {
+      ariaDescribedBy.split(/\s+/).forEach(id => {
+        const target = document.getElementById(id);
+        if (target && target.innerText) parts.push(target.innerText);
+      });
+    }
+
+    // 3. label[for="..."]
     if (el.id) {
-      const labelEl = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
-      if (labelEl) text += ' ' + labelEl.innerText;
+      try {
+        const l = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+        if (l && l.innerText) parts.push(l.innerText);
+      } catch (_e) {}
     }
+
+    // 4. Label parent englobant
     const parentLabel = el.closest('label');
-    if (parentLabel) text += ' ' + parentLabel.innerText;
-
-    // Précédent frère immédiat (label ou span descriptif)
-    let prev = el.previousElementSibling;
-    if (prev && /label|span|p|legend/i.test(prev.tagName)) {
-      text += ' ' + prev.innerText;
+    if (parentLabel && parentLabel.innerText) {
+      parts.push(parentLabel.innerText);
     }
 
-    // Cherche le texte dans le conteneur immédiat si délimité (ex. .form-group)
-    let parent = el.parentElement;
-    if (parent && parent.tagName !== 'BODY' && parent.tagName !== 'FORM' && parent.children.length <= 6) {
-      const labelNode = parent.querySelector('label, .label, legend, span');
-      if (labelNode && labelNode !== el && !labelNode.contains(el)) {
-        text += ' ' + labelNode.innerText;
+    // 5. Frère précédent direct ou dans ses wrappers (jusqu'à 5 niveaux)
+    let cur = el;
+    for (let depth = 0; depth < 5 && cur && cur !== document.body; depth++) {
+      let prev = cur.previousElementSibling;
+      while (prev) {
+        const txt = (prev.innerText || '').trim();
+        if (txt && txt.length > 2 && txt.length < 350) {
+          parts.push(txt);
+          break;
+        }
+        prev = prev.previousElementSibling;
       }
+      cur = cur.parentElement;
     }
 
-    if (el.name) text += ' ' + el.name;
-    return text.toLowerCase().replace(/\s+/g, ' ').trim();
+    // 6. Remontée des ancêtres (jusqu'à 6 niveaux) pour capturer questions / titres
+    let node = el.parentElement;
+    for (let i = 0; i < 6 && node && node !== document.body && node !== document.documentElement; i++) {
+      const candidates = node.querySelectorAll('label, legend, h1, h2, h3, h4, h5, h6, [class*="question" i], [class*="title" i], [class*="label" i], p, .text, span');
+      for (const c of candidates) {
+        if (c !== el && !c.contains(el)) {
+          const t = (c.innerText || '').trim();
+          if (t && t.length > 2 && t.length < 350) {
+            parts.push(t);
+            break;
+          }
+        }
+      }
+      if (parts.length > 2) break;
+      node = node.parentElement;
+    }
+
+    // 7. Si toujours pauvre, inspecter le conteneur parent
+    if (parts.length === 0 && el.parentElement) {
+      const parentTxt = (el.parentElement.innerText || '').replace(el.value || '', '').trim();
+      if (parentTxt && parentTxt.length < 250) parts.push(parentTxt);
+    }
+
+    if (el.name) parts.push(el.name);
+
+    return parts.join(' ').toLowerCase().replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
   }
 
   // -------------------------------------------------------------------------
@@ -289,12 +346,13 @@
     let filledCount = 0;
     let cvAttached = false;
 
-    // 1. Text Inputs
+    // 1. Text Inputs (Champs personnels + Questions ouvertes en phrases complètes)
     const inputs = document.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"]):not([type="file"])');
     for (const input of inputs) {
       if (input.value && input.value.trim().length > 0) continue; // Ne pas écraser
       const label = getFieldLabel(input);
       const type = (input.type || '').toLowerCase();
+      const placeholder = (input.getAttribute('placeholder') || '').toLowerCase();
 
       // Prénom
       if (/first[\s_-]*name|pr[ée]nom|given[\s_-]*name/i.test(label)) {
@@ -320,13 +378,17 @@
       else if (/code[\s_-]*postal|postal[\s_-]*code|zip/i.test(label)) {
         if (setNativeValue(input, pers.postal_code)) filledCount++;
       }
-      // Ville
-      else if (/city|ville|commune|localit[ée]/i.test(label)) {
+      // Ville / Lieu
+      else if (/city|ville|commune|localit[ée]|lieu/i.test(label) && !/[ée]tablissement|naissance/i.test(label)) {
         if (setNativeValue(input, pers.city)) filledCount++;
       }
       // Adresse
       else if (/address|adresse(?![\s_-]*mail)|rue|street/i.test(label)) {
         if (setNativeValue(input, pers.address)) filledCount++;
+      }
+      // Nationalité / Citoyenneté
+      else if (/nationalit[ée]|nationality|citoyennet[ée]|citizenship/i.test(label)) {
+        if (setNativeValue(input, pers.nationality || 'Marocaine')) filledCount++;
       }
       // LinkedIn
       else if (/linkedin/i.test(label)) {
@@ -340,30 +402,102 @@
       else if (/portfolio|site[\s_-]*web|website|site[\s_-]*perso|site[\s_-]*internet/i.test(label)) {
         if (setNativeValue(input, pers.portfolio)) filledCount++;
       }
-      // Questions de la Banque Q&A (Salaire, Date de début, Mobilité, Diplôme, etc.)
-      else if (/pr[ée]tention|salaire|salary|compensation|remun[ée]ration|gratification/i.test(label) && qa.pretentions_salariales) {
-        if (setNativeValue(input, qa.pretentions_salariales)) filledCount++;
+      // Établissement / École / Université
+      else if (/quel[\s_-]*[ée]tablissement|[ée]tablissement.*inscrit|inscrit.*[ée]tablissement|\b[ée]tablissement\b|\b[ée]cole\b|\bschool\b|\binstitution\b|\buniversit[ée]\b/i.test(label)) {
+        const schoolVal = (data.education && data.education.school) || qa.etablissement || 'INSA Centre Val de Loire';
+        if (setNativeValue(input, schoolVal)) filledCount++;
       }
-      else if (/date[\s_-]*d[ée]but|start[\s_-]*date|quand.*commencer/i.test(label) && qa.date_debut_stage) {
-        if (setNativeValue(input, qa.date_debut_stage)) filledCount++;
+      // Date de début / À partir de quand disponible (phrase complète si champ texte)
+      else if (/[àa]\s*partir\s*de\s*quand.*disponible|disponible.*d[ée]but|date.*d[ée]but.*stage|d[ée]but.*stage|quand.*disponible.*stage|start.*date.*internship/i.test(label)) {
+        let val;
+        if (type === 'date') val = '2027-04-05';
+        else if (/jj\/mm\/aaaa|dd\/mm\/yyyy/i.test(placeholder)) val = '05/04/2027';
+        else val = qa.date_debut_stage || "Je suis disponible pour débuter mon stage à partir du 5 avril 2027 pour une durée de 4 à 6 mois.";
+        if (setNativeValue(input, val)) filledCount++;
       }
-      else if (/disponibilit[ée]|availability|pr[ée]avis|dur[ée]e/i.test(label) && qa.disponibilite_stage) {
-        if (setNativeValue(input, qa.disponibilite_stage)) filledCount++;
+      // Jusqu'à quand disponible pour le démarrage / Date limite de démarrage
+      else if (/jusqu['\s]*[àa]\s*quand.*disponible|jusqu['\s]*[àa]\s*quand.*d[ée]marrage|d[ée]marrage.*stage|date.*limite.*d[ée]marrage|fin.*d[ée]marrage|latest.*start/i.test(label)) {
+        let val;
+        if (type === 'date') val = '2027-09-01';
+        else if (/jj\/mm\/aaaa|dd\/mm\/yyyy/i.test(placeholder)) val = '01/09/2027';
+        else val = qa.date_fin_demarrage_stage || "Je suis disponible pour le démarrage de mon stage jusqu'en septembre 2027 au plus tard.";
+        if (setNativeValue(input, val)) filledCount++;
       }
-      else if (/mobilit[ée]|d[ée]placement/i.test(label) && qa.mobilite_geographique) {
-        if (setNativeValue(input, qa.mobilite_geographique)) filledCount++;
+      // Convention de stage (si champ texte)
+      else if (/convention.*stage|disposerez.*convention|b[ée]n[ée]ficierez.*convention/i.test(label)) {
+        const val = qa.convention_stage || "Oui, je disposerai d'une convention de stage délivrée par mon école (l'INSA Centre Val de Loire) pour toute la durée du stage.";
+        if (setNativeValue(input, val)) filledCount++;
       }
-      else if (/dipl[ôo]me[\s_-]*pr[ée]par[ée]|formation|cursus/i.test(label) && qa.diplome_prepare) {
-        if (setNativeValue(input, qa.diplome_prepare)) filledCount++;
+      // Type de stage (si champ texte)
+      else if (/type.*stage|nature.*stage|kind.*internship/i.test(label)) {
+        const val = qa.type_stage || "Stage élève-ingénieur (Fin de Master 1 / Césure 1ère partie - Bac+4/5 à l'INSA Centre Val de Loire).";
+        if (setNativeValue(input, val)) filledCount++;
       }
-      else if (/ann[ée]e[\s_-]*dipl[ôo]me|graduation[\s_-]*year/i.test(label) && qa.annee_diplome) {
-        if (setNativeValue(input, qa.annee_diplome)) filledCount++;
+      // Durée du stage
+      else if (/dur[ée]e.*stage|duration.*internship/i.test(label)) {
+        const val = qa.duree_stage || "Je recherche un stage d'une durée de 4 à 6 mois.";
+        if (setNativeValue(input, val)) filledCount++;
       }
-      else if (/niveau[\s_-]*(d['\s]*)?[ée]tudes?|education[\s_-]*level/i.test(label) && qa.niveau_etudes) {
-        if (setNativeValue(input, qa.niveau_etudes)) filledCount++;
+      // Prétentions salariales / Gratification
+      else if (/pr[ée]tention|salaire|salary|compensation|remun[ée]ration|gratification/i.test(label)) {
+        const val = qa.pretentions_salariales || "Selon la grille légale de rémunération des stagiaires en vigueur au sein de l'entreprise.";
+        if (setNativeValue(input, val)) filledCount++;
       }
-      else if (/source|comment.*connu/i.test(label) && qa.source_offre) {
-        if (setNativeValue(input, qa.source_offre)) filledCount++;
+      // Mobilité géographique
+      else if (/mobilit[ée]|d[ée]placement|relocat/i.test(label)) {
+        const val = qa.mobilite_geographique || "Je suis totalement mobile sur l'ensemble de la France, avec une préférence pour l'Île-de-France et la région Centre-Val de Loire.";
+        if (setNativeValue(input, val)) filledCount++;
+      }
+      // Diplôme préparé / Cursus
+      else if (/dipl[ôo]me[\s_-]*pr[ée]par[ée]|formation|cursus|\bdipl[ôo]me\b/i.test(label)) {
+        const val = (data.education && data.education.degree) || qa.diplome_prepare || "Diplôme d'ingénieur en Cybersécurité";
+        if (setNativeValue(input, val)) filledCount++;
+      }
+      // Spécialité / Major
+      else if (/sp[ée]cialit[ée]|major|field[\s_-]*of[\s_-]*study/i.test(label)) {
+        const val = (data.education && data.education.specialite) || "Cybersécurité";
+        if (setNativeValue(input, val)) filledCount++;
+      }
+      // Dates formation
+      else if (/date[\s_-]*(?:de[\s_-]*)?d[ée]but.*formation|start[\s_-]*date.*education/i.test(label)) {
+        if (setNativeValue(input, (data.education && data.education.start_date) || "01/09/2023")) filledCount++;
+      }
+      else if (/date[\s_-]*(?:de[\s_-]*)?fin.*formation|end[\s_-]*date.*education|graduation[\s_-]*date/i.test(label)) {
+        if (setNativeValue(input, (data.education && data.education.end_date) || "01/05/2028")) filledCount++;
+      }
+      else if (/formation[\s_-]*en[\s_-]*cours|currently[\s_-]*enrolled|is[\s_-]*current/i.test(label)) {
+        if (setNativeValue(input, (data.education && data.education.is_current) || "Yes")) filledCount++;
+      }
+      // Année d'obtention diplôme
+      else if (/ann[ée]e[\s_-]*dipl[ôo]me|graduation[\s_-]*year/i.test(label)) {
+        if (setNativeValue(input, qa.annee_diplome || "2028")) filledCount++;
+      }
+      // Niveau d'études
+      else if (/niveau[\s_-]*(d['\s]*)?[ée]tudes?|education[\s_-]*level/i.test(label)) {
+        if (setNativeValue(input, qa.niveau_etudes || "Bac+4 (Élève-ingénieur à l'INSA Centre Val de Loire)")) filledCount++;
+      }
+      // Langues / Anglais
+      else if (/anglais|english|langue|toeic/i.test(label)) {
+        const val = qa.langues || "Français (langue maternelle) et Anglais (courant professionnel, score TOEIC 980/990).";
+        if (setNativeValue(input, val)) filledCount++;
+      }
+      // Télétravail
+      else if (/t[ée]l[ée]travail|remote|hybride/i.test(label)) {
+        const val = qa.teletravail || "Je suis disponible pour travailler sur site, en mode hybride ou en télétravail.";
+        if (setNativeValue(input, val)) filledCount++;
+      }
+      // Source offre
+      else if (/source|comment.*connu/i.test(label)) {
+        if (setNativeValue(input, qa.source_offre || "LinkedIn")) filledCount++;
+      }
+      // Questions ouvertes / Formulaire sous forme de question textuelle -> smart answer
+      else if (label.includes('?') || /pourquoi|motivation|message|remarque|int[ée]r[êe]t|atout|d[ée]crivez|pr[ée]cisez/i.test(label)) {
+        try {
+          const ansData = await apiSmartAnswer(label, document.title);
+          if (ansData && ansData.answer) {
+            if (setNativeValue(input, ansData.answer)) filledCount++;
+          }
+        } catch (_e) {}
       }
     }
 
@@ -481,28 +615,146 @@
       }
     }
 
-    // 3. Boutons Radio & Checkboxes (Questions standard : Permis, Mobilité, Autorisation)
-    const radios = document.querySelectorAll('input[type="radio"], input[type="checkbox"]');
-    for (const r of radios) {
-      if (r.checked) continue;
-      const label = getFieldLabel(r);
-      const isYes = /oui|yes/i.test(label) || /oui|yes/i.test(r.value || '');
-      const isNo = /non|no/i.test(label) || /non|no/i.test(r.value || '');
+    // Helper pour activer un chip, bouton ou radio
+    function activateChoiceElement(el) {
+      if (!el) return false;
+      try {
+        el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        el.focus();
+        el.click();
+        el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
+        el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
+        el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+        el.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
 
-      // Permis de conduire -> Oui
-      if (/permis/i.test(label) && isYes) {
-        r.click();
-        filledCount++;
+        const radio = el.querySelector('input[type="radio"], input[type="checkbox"]') ||
+                      (el.htmlFor ? document.getElementById(el.htmlFor) : null);
+        if (radio) {
+          radio.checked = true;
+          radio.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+          radio.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+        }
+        if (el.getAttribute('role') === 'radio' || el.getAttribute('role') === 'checkbox') {
+          el.setAttribute('aria-checked', 'true');
+        }
+        highlightField(el);
+        return true;
+      } catch (_e) {
+        return false;
       }
-      // Véhicule personnel -> Non
-      else if (/v[ée]hicule[\s_-]*personnel/i.test(label) && isNo) {
-        r.click();
-        filledCount++;
+    }
+
+    // 3. Traitement des choix (Radios, Checkboxes, Chips Taleo / Alta UI, Boutons de choix)
+    const choiceSelectors = 'button, [role="radio"], [role="button"], label, .chip, .badge, .btn, span[class*="chip" i], div[class*="chip" i], input[type="radio"], input[type="checkbox"]';
+    const choiceCandidates = Array.from(document.querySelectorAll(choiceSelectors));
+    const handledGroups = new Set();
+
+    for (const el of choiceCandidates) {
+      const isInput = el.tagName === 'INPUT';
+      if (isInput && el.checked) continue;
+
+      const txt = (el.innerText || el.value || '').trim();
+      const txtLower = txt.toLowerCase();
+      if (!txt && !isInput) continue;
+
+      const label = getFieldLabel(el);
+      if (!label) continue;
+
+      // Question 5 : Disposerez-vous d'une convention pour toute la durée de votre stage ? -> OUI
+      if (/convention.*stage|disposerez.*convention|b[ée]n[ée]ficierez.*convention/i.test(label)) {
+        if (/^oui$|^yes$/i.test(txtLower) || (isInput && /oui|yes/i.test(el.value || ''))) {
+          if (!handledGroups.has('convention')) {
+            if (activateChoiceElement(el)) {
+              handledGroups.add('convention');
+              filledCount++;
+            }
+          }
+        }
       }
-      // Autorisation de travail en France -> Oui
-      else if (/autoris(ation|[ée])|l[ée]galement|droit[\s_-]*de[\s_-]*travailler/i.test(label) && isYes) {
-        r.click();
-        filledCount++;
+
+      // Question 4 : De quel type de stage s'agit-il ? -> FIN MASTER 1 ou CÉSURE 1ÈRE PARTIE
+      else if (/type.*stage|nature.*stage|kind.*internship/i.test(label)) {
+        if (/fin\s*master\s*1|c[ée]sure\s*1[èe]re\s*partie|bac\s*\+\s*4|c[ée]sure/i.test(txtLower)) {
+          if (!handledGroups.has('type_stage')) {
+            if (activateChoiceElement(el)) {
+              handledGroups.add('type_stage');
+              filledCount++;
+            }
+          }
+        }
+      }
+
+      // Permis de conduire -> OUI
+      else if (/permis[\s_-]*de[\s_-]*conduire|driving[\s_-]*licen/i.test(label) && !/v[ée]hicule/i.test(label)) {
+        if (/^oui$|^yes$/i.test(txtLower) || (isInput && /oui|yes/i.test(el.value || ''))) {
+          if (!handledGroups.has('permis')) {
+            if (activateChoiceElement(el)) {
+              handledGroups.add('permis');
+              filledCount++;
+            }
+          }
+        }
+      }
+
+      // Véhicule personnel -> NON
+      else if (/v[ée]hicule[\s_-]*personnel|voiture|car[\s_-]*owner/i.test(label)) {
+        if (/^non$|^no$/i.test(txtLower) || (isInput && /non|no/i.test(el.value || ''))) {
+          if (!handledGroups.has('vehicule')) {
+            if (activateChoiceElement(el)) {
+              handledGroups.add('vehicule');
+              filledCount++;
+            }
+          }
+        }
+      }
+
+      // Autorisation de travail en France -> OUI
+      else if (/autoris(ation|[ée])|l[ée]galement|droit[\s_-]*de[\s_-]*travailler|work[\s_-]*permit/i.test(label)) {
+        if (/^oui$|^yes$/i.test(txtLower) || (isInput && /oui|yes/i.test(el.value || ''))) {
+          if (!handledGroups.has('autorisation')) {
+            if (activateChoiceElement(el)) {
+              handledGroups.add('autorisation');
+              filledCount++;
+            }
+          }
+        }
+      }
+
+      // Déjà salarié / Ancien employé -> NON
+      else if (/d[ée]j[àa].*(salari|employ)|former.*employ/i.test(label)) {
+        if (/^non$|^no$/i.test(txtLower) || (isInput && /non|no/i.test(el.value || ''))) {
+          if (!handledGroups.has('ancien_salarie')) {
+            if (activateChoiceElement(el)) {
+              handledGroups.add('ancien_salarie');
+              filledCount++;
+            }
+          }
+        }
+      }
+
+      // Handicap / RQTH -> NON
+      else if (/handicap|rqth|disabilit/i.test(label)) {
+        if (/^non$|^no$|aucun|non[\s_-]*concern/i.test(txtLower) || (isInput && /non|no/i.test(el.value || ''))) {
+          if (!handledGroups.has('handicap')) {
+            if (activateChoiceElement(el)) {
+              handledGroups.add('handicap');
+              filledCount++;
+            }
+          }
+        }
+      }
+
+      // Télétravail -> OUI / HYBRIDE
+      else if (/t[ée]l[ée]travail|remote|hybride/i.test(label)) {
+        if (/^oui$|^yes$|hybride|indiff[ée]rent/i.test(txtLower) || (isInput && /oui|yes/i.test(el.value || ''))) {
+          if (!handledGroups.has('teletravail')) {
+            if (activateChoiceElement(el)) {
+              handledGroups.add('teletravail');
+              filledCount++;
+            }
+          }
+        }
       }
     }
 
@@ -824,7 +1076,7 @@
       }
     }
 
-    // 5. Textareas (Banque Q&A + Génération IA des questions ouvertes)
+    // 5. Textareas (Banque Q&A + Génération IA des questions ouvertes en phrases complètes)
     const textareas = document.querySelectorAll('textarea');
     let aiCount = 0;
     for (const ta of textareas) {
@@ -832,17 +1084,21 @@
       const label = getFieldLabel(ta);
 
       // Correspondances Banque Q&A directe dans un textarea
-      if (/pr[ée]tention|salaire|salary|compensation/i.test(label) && qa.pretentions_salariales) {
-        if (setNativeValue(ta, qa.pretentions_salariales)) filledCount++;
-      } else if (/disponibilit[ée]|availability|date[\s_-]*d[ée]but/i.test(label) && qa.disponibilite_stage) {
-        if (setNativeValue(ta, qa.disponibilite_stage)) filledCount++;
-      } else if (/mobilit[ée]|d[ée]placement/i.test(label) && qa.mobilite_geographique) {
-        if (setNativeValue(ta, qa.mobilite_geographique)) filledCount++;
-      } else if (/anglais|langue|english/i.test(label) && qa.langues) {
-        if (setNativeValue(ta, qa.langues)) filledCount++;
+      if (/pr[ée]tention|salaire|salary|compensation|remun[ée]ration|gratification/i.test(label)) {
+        if (setNativeValue(ta, qa.pretentions_salariales || "Selon la grille légale de rémunération des stagiaires en vigueur au sein de l'entreprise.")) filledCount++;
+      } else if (/[àa]\s*partir\s*de\s*quand.*disponible|disponible.*d[ée]but|date[\s_-]*d[ée]but/i.test(label)) {
+        if (setNativeValue(ta, qa.date_debut_stage || "Je suis disponible pour débuter mon stage à partir du 5 avril 2027 pour une durée de 4 à 6 mois.")) filledCount++;
+      } else if (/jusqu['\s]*[àa]\s*quand.*disponible|d[ée]marrage/i.test(label)) {
+        if (setNativeValue(ta, qa.date_fin_demarrage_stage || "Je suis disponible pour le démarrage de mon stage jusqu'en septembre 2027 au plus tard.")) filledCount++;
+      } else if (/convention.*stage|disposerez.*convention/i.test(label)) {
+        if (setNativeValue(ta, qa.convention_stage || "Oui, je disposerai d'une convention de stage délivrée par mon école (l'INSA Centre Val de Loire) pour toute la durée du stage.")) filledCount++;
+      } else if (/mobilit[ée]|d[ée]placement/i.test(label)) {
+        if (setNativeValue(ta, qa.mobilite_geographique || "Je suis totalement mobile sur l'ensemble de la France, avec une préférence pour l'Île-de-France et la région Centre-Val de Loire.")) filledCount++;
+      } else if (/anglais|langue|english/i.test(label)) {
+        if (setNativeValue(ta, qa.langues || "Français (langue maternelle) et Anglais (courant professionnel, score TOEIC 980/990).")) filledCount++;
       }
       // Questions ouvertes -> Génération IA personnalisée en direct
-      else if (/pourquoi|motivation|message|remarque|int[ée]r[êe]t|atout|d[ée]crivez|exp[ée]rience|qualit[ée]|projet|comp[ée]tence|lettre/i.test(label) || textareas.length === 1) {
+      else if (/pourquoi|motivation|message|remarque|int[ée]r[êe]t|atout|d[ée]crivez|exp[ée]rience|qualit[ée]|projet|comp[ée]tence|lettre/i.test(label) || label.includes('?') || textareas.length === 1) {
         try {
           setPillState('loading', '🤖 Rédaction IA...');
           const ansData = await apiSmartAnswer(label, document.title);
