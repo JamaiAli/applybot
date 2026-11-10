@@ -84,6 +84,7 @@ def _qa_knowledge() -> dict:
 def _field_values(p: dict) -> list[tuple[re.Pattern, str]]:
     """Table (motif de champ -> valeur) à partir de profile.json."""
     pers = p.get("personal", {})
+    edu = p.get("education", {})
     full = pers.get("full_name", "")
     first = pers.get("preferred_name") or (full.split()[0] if full else "")
     last = " ".join(full.split()[1:]) if len(full.split()) > 1 else ""
@@ -92,11 +93,18 @@ def _field_values(p: dict) -> list[tuple[re.Pattern, str]]:
         r"(nom(?![\s_-]*utilisateur)|last[\s_-]*name|surname|family)": last,
         r"(e[\s_-]?mail|courriel)": pers.get("email", ""),
         r"(t[ée]l[ée]phone|phone|mobile|portable|num[ée]ro|joindre)": pers.get("phone", ""),
-        r"(ville|habitez|city|localit[ée])": pers.get("city", ""),
         r"(code[\s_-]*postal|postal[\s_-]*code|zip)": pers.get("postal_code", ""),
         r"(linkedin)": pers.get("linkedin_url", ""),
         r"(github)": pers.get("github_url", ""),
         r"(portfolio|site[\s_-]*web|website|site perso)": pers.get("portfolio_url", ""),
+        r"(nationalit[ée]|nationality|citoyennet[ée]|citizenship)": pers.get("nationality", "Marocaine"),
+        r"(\b[eé]cole\b|\bschool\b|\b[eé]tablissement\b|\binstitution\b|\buniversit[eé]\b)": edu.get("school", "insa centre val de loire"),
+        r"(\bdipl[oô]me\b|\bdegree\b|\bdiploma\b)": edu.get("degree", "cybersécurité"),
+        r"(sp[ée]cialit[ée]|field[\s_-]*of[\s_-]*study|major)": edu.get("specialite", "cybersécurité"),
+        r"(date[\s_-]*(?:de[\s_-]*)?d[ée]but|start[\s_-]*date)": edu.get("start_date", "01/09/2023"),
+        r"(date[\s_-]*(?:de[\s_-]*)?fin|end[\s_-]*date|graduation[\s_-]*date)": edu.get("end_date", "01/05/2028"),
+        r"(formation[\s_-]*en[\s_-]*cours|currently[\s_-]*enrolled|is[\s_-]*current)": edu.get("is_current", "Yes"),
+        r"(ville|habitez|city|localit[ée]|lieu)": pers.get("city", "bourges"),
     }
     return [(re.compile(k, re.I), v) for k, v in pairs.items() if v]
 
@@ -374,17 +382,21 @@ _JS_SMART_FIELDS = r"""
 
 def _candidate_brief(p: dict) -> str:
     pers = p.get("personal", {})
+    edu = p.get("education", {})
     skills = p.get("skills_boundary", {})
     flat = []
     for v in (skills.values() if isinstance(skills, dict) else []):
         if isinstance(v, list):
             flat += v
-    school = p.get("experience", {}).get("school") or "INSA Centre Val de Loire"
+    school = edu.get("school") or p.get("experience", {}).get("school") or "insa centre val de loire"
+    degree = edu.get("degree", "cybersécurité")
+    nat = pers.get("nationality", "Marocaine")
+    dates_edu = f"{edu.get('start_date', '01/09/2023')} au {edu.get('end_date', '01/05/2028')}"
     objectif = (p.get("internship", {}).get("summary")
                 or "stage de 6 mois a partir d'avril 2027 en integration IT et "
                    "cybersecurite, autour d'Active Directory / Entra ID")
     comp = ", ".join(flat[:25])
-    return (f"Nom: {pers.get('full_name')}. Ecole: {school}. "
+    return (f"Nom: {pers.get('full_name')}. Nationalité: {nat}. Ecole: {school}. Diplôme: {degree} ({dates_edu}, en cours: Yes, lieu: bourges). "
             f"Objectif: {objectif}. Competences cles: {comp}.")
 
 
