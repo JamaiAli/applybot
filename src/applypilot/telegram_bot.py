@@ -1096,25 +1096,40 @@ async def job_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 # ---------------------------------------------------------------------------
 # Boutons (✅ / ✏️ / ❌)
 # ---------------------------------------------------------------------------
+async def _safe_answer_query(query: CallbackQuery, text: str | None = None, show_alert: bool = False) -> bool:
+    try:
+        if text:
+            await query.answer(text, show_alert=show_alert)
+        else:
+            await query.answer()
+        return True
+    except Exception as exc:
+        log.debug("Callback query.answer ignoré : %s", exc)
+        return False
+
+
 async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _authorized(update):
         return await _deny(update)
     query = update.callback_query
     data = query.data or ""
     if data == "noop":
-        return await query.answer()
+        await _safe_answer_query(query)
+        return
     try:
         action, h = data.split(":", 1)
     except ValueError:
-        return await query.answer()
+        await _safe_answer_query(query)
+        return
     url = bot_core.resolve(h)
     if not url:
-        return await query.answer("Offre introuvable (redémarrage ?).", show_alert=True)
+        await _safe_answer_query(query, "Offre introuvable (redémarrage ?).", show_alert=True)
+        return
 
     if action == "jobapply":
         # Job étudiant / intérim : CV fixe. Envoie le CV + le lien (téléphone) ET
         # ouvre le formulaire pré-rempli sur le PC si tu y es.
-        await query.answer("C'est parti…")
+        await _safe_answer_query(query, "C'est parti…")
         chat_id = query.message.chat_id
         if not JOB_CV.exists():
             await context.bot.send_message(
@@ -1162,7 +1177,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     if action == "prep":
-        await query.answer("Préparation…")
+        await _safe_answer_query(query, "Préparation…")
         await context.bot.send_message(
             query.message.chat_id,
             "📨 Préparation de ta candidature : génération du CV adapté "
@@ -1192,8 +1207,8 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             cmd = [sys.executable, "-m", "applypilot.autoapply", "--url", url]
             if pdf:
                 cmd += ["--cv", str(pdf)]
-            subprocess.Popen(cmd, cwd=os.getcwd(),
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            log_fh = (config.APP_DIR / "autoapply.log").open("a", encoding="utf-8")
+            subprocess.Popen(cmd, cwd=os.getcwd(), stdout=log_fh, stderr=log_fh)
             opened = True
         except Exception as exc:
             log.warning("Lancement du navigateur échoué : %s", exc)
@@ -1228,7 +1243,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if action == "ok":
         bot_core.set_apply_status(url, "applied")
-        await query.answer("✅ Marquée postulée")
+        await _safe_answer_query(query, "✅ Marquée postulée")
         try:
             await query.message.delete()  # retire la carte du fil
         except Exception:
@@ -1236,7 +1251,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     elif action == "no":
         bot_core.set_apply_status(url, "ignored")
-        await query.answer("❌ Ignorée")
+        await _safe_answer_query(query, "❌ Ignorée")
         try:
             await query.message.delete()  # retire la carte du fil
         except Exception:
@@ -1245,7 +1260,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     elif action == "edit":
         # Telegram n'a pas de modal : on attend le prochain message texte.
         context.user_data["awaiting_edit_for"] = url
-        await query.answer()
+        await _safe_answer_query(query)
         await context.bot.send_message(
             query.message.chat_id,
             "✏️ Réponds à ce message avec ta consigne "

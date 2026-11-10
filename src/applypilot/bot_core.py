@@ -453,9 +453,8 @@ def get_last_prepared() -> str | None:
 def set_cv_path(url: str, pdf_path: str) -> None:
     """Enregistre le CV généré comme CV adapté de l'offre."""
     conn = get_connection()
-    conn.execute("UPDATE jobs SET tailored_resume_path = ? WHERE url = ?",
-                 (pdf_path, url))
-    conn.commit()
+    execute_write(conn, "UPDATE jobs SET tailored_resume_path = ? WHERE url = ?",
+                  (pdf_path, url))
 
 
 def attachment_paths(row: dict) -> list[Path]:

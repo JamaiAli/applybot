@@ -971,6 +971,34 @@ def _apply_via_cdp(offer: dict, cv_path: str | None,
     return result
 
 
+def _cleanup_stale_profile_locks() -> None:
+    """Termine les anciens processus Chrome orphelins liés à browser_profile."""
+    try:
+        import psutil
+        curr_pid = os.getpid()
+        for p in psutil.process_iter(['pid', 'name', 'cmdline']):
+            try:
+                if p.info['pid'] == curr_pid:
+                    continue
+                cmdline = p.info.get('cmdline') or []
+                for arg in cmdline:
+                    if 'browser_profile' in arg and 'chrome' in (p.info.get('name') or '').lower():
+                        log.info("Fermeture ancien Chrome orphelin (PID %d)...", p.info['pid'])
+                        p.kill()
+                        break
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+    except Exception as exc:
+        log.debug("Nettoyage Chrome orphelins ignoré : %s", exc)
+
+    try:
+        lock_file = BROWSER_PROFILE_DIR / "lockfile"
+        if lock_file.exists():
+            lock_file.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
 def apply_to_offer(offer: dict, cv_path: str | None = None,
                    headless: bool = False, keep_open_seconds: int = 900) -> dict:
     """Ouvre l'offre dans un navigateur VISIBLE et pré-remplit le formulaire.
@@ -1016,6 +1044,7 @@ def apply_to_offer(offer: dict, cv_path: str | None = None,
             return {"status": "error", "message": f"Playwright/Patchright indisponible : {exc}"}
 
     BROWSER_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+    _cleanup_stale_profile_locks()
 
     # Arguments de lancement communs (anti-détection + UX)
     _LAUNCH_ARGS = [
@@ -1051,8 +1080,11 @@ def apply_to_offer(offer: dict, cv_path: str | None = None,
                 ctx = None
 
         if ctx is None:
-            return {"status": "error",
-                    "message": "Impossible de lancer le navigateur (Chrome/Chromium)."}
+            log.warning("Impossible d'obtenir le contexte Playwright, ouverture directe dans le navigateur réel...")
+            open_in_real_browser(target_url)
+            return {"status": "real_browser", "url": target_url,
+                    "message": "Offre ouverte dans votre navigateur par défaut (remplissage manuel).",
+                    "screenshot": None}
 
         # Script stealth identique à celui du scraper (masque webdriver, plugins…)
         from applypilot.enrichment.detail import _STEALTH_INIT_SCRIPT  # noqa: PLC0415
