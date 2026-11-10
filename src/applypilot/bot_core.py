@@ -22,7 +22,7 @@ import unicodedata
 from pathlib import Path
 
 from applypilot import config
-from applypilot.database import get_connection, transition_state
+from applypilot.database import execute_write, get_connection, transition_state
 from applypilot.discovery.dates import age_days, to_dt
 
 log = logging.getLogger("applypilot.bot")
@@ -374,15 +374,14 @@ def set_apply_status(url: str, status: str, note: str | None = None) -> None:
     """Enregistre une décision utilisateur et reflète l'état dans la machine à
     états. `status` ∈ {validated, ignored, edit_requested}."""
     conn = get_connection()
-    conn.execute("UPDATE jobs SET apply_status = ? WHERE url = ?", (status, url))
-    conn.commit()
+    execute_write(conn, "UPDATE jobs SET apply_status = ? WHERE url = ?", (status, url))
     to_state = {"validated": "ready_to_apply", "ignored": "archived",
                 "applied": "applied"}.get(status)
     if to_state:
         try:
             transition_state(conn, url, to_state,
                              reason=f"bot:{status}" + (f" ({note})" if note else ""),
-                             force=True)
+                             force=True, commit=True)
         except Exception as exc:  # transition non bloquante
             log.debug("transition_state ignorée pour %s : %s", url, exc)
 

@@ -516,12 +516,15 @@ def run_tracking(
         doc_count = 0
         for job in applied_jobs:
             if job.get("tracking_status") or matched_count > 0:
-                row = conn.execute("SELECT * FROM jobs WHERE url = ?", (job["url"],)).fetchone()
-                if row and row["tracking_status"]:
-                    path = generate_tracking_doc(dict(zip(row.keys(), row)), conn)
-                    if path:
-                        update_job_tracking_fields(job["url"], {"tracking_doc_path": path}, conn)
-                        doc_count += 1
+                try:
+                    row = conn.execute("SELECT * FROM jobs WHERE url = ?", (job["url"],)).fetchone()
+                    if row and row["tracking_status"]:
+                        path = generate_tracking_doc(dict(zip(row.keys(), row)), conn)
+                        if path:
+                            update_job_tracking_fields(job["url"], {"tracking_doc_path": path}, conn)
+                            doc_count += 1
+                except Exception as exc:
+                    log.warning("Erreur génération tracking doc pour %s: %s", job.get("url"), exc)
         if doc_count:
             console.print(f"  Generated {doc_count} tracking documents")
 

@@ -36,7 +36,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from applypilot import config
-from applypilot.database import get_connection, init_db, transition_state
+from applypilot.database import get_connection, init_db, transition_state, execute_write
 from applypilot.discovery.ats_common import insert_normalized_jobs
 
 log = logging.getLogger(__name__)
@@ -275,15 +275,15 @@ def run_hellowork_discovery(workers: int = 1, queries: list[str] | None = None) 
                 detail = _fetch_detail(client, u)
                 details_left -= 1
                 if detail.get("full_description"):
-                    conn.execute(
+                    execute_write(
+                        conn,
                         "UPDATE jobs SET full_description = ?, description = ?, "
                         "posted_at = COALESCE(?, posted_at) WHERE url = ?",
                         (detail["full_description"], detail["full_description"][:500],
                          detail.get("posted_at"), u))
-                    conn.commit()
                     try:
                         transition_state(conn, u, "enriched",
-                                         reason="hellowork jsonld", force=True)
+                                         reason="hellowork jsonld", force=True, commit=True)
                     except Exception:
                         pass
                     back += 1

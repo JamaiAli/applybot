@@ -24,12 +24,50 @@ _log = logging.getLogger(__name__)
 # (required for SQLite thread safety with parallel workers)
 _local = threading.local()
 
+# Process-wide write lock to serialize concurrent SQLite writes across threads
+# (e.g., telegram bot command handlers, auto-cycle discovery, HTTP tracer server)
+_DB_WRITE_LOCK = threading.RLock()
+
+
+def execute_write(
+    conn: sqlite3.Connection,
+    sql: str,
+    parameters: tuple | list | dict = (),
+    max_retries: int = 10,
+    base_delay: float = 0.25,
+) -> sqlite3.Cursor:
+    """Execute a single write SQL statement and commit under _DB_WRITE_LOCK with retry on lock."""
+    with _DB_WRITE_LOCK:
+        for attempt in range(max_retries):
+            try:
+                cursor = conn.execute(sql, parameters)
+                conn.commit()
+                return cursor
+            except sqlite3.OperationalError as e:
+                err_msg = str(e).lower()
+                if "database is locked" not in err_msg and "busy" not in err_msg:
+                    raise
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                if attempt < max_retries - 1:
+                    delay = base_delay * (1.5 ** attempt)
+                    _log.warning(
+                        "DB locked on execute_write (attempt %d/%d), retry in %.2fs",
+                        attempt + 1, max_retries, delay,
+                    )
+                    time.sleep(delay)
+                else:
+                    _log.error("DB execute_write locked: giving up after %d attempts", max_retries)
+                    raise
+
 
 def write_with_retry(
     conn: sqlite3.Connection,
     fn,
     *args,
-    max_retries: int = 8,
+    max_retries: int = 10,
     base_delay: float = 0.25,
     **kwargs,
 ) -> None:
@@ -39,51 +77,55 @@ def write_with_retry(
     the entire batch from the start. Handles contention from concurrent
     streaming stages and the apply process all writing simultaneously.
     """
-    for attempt in range(max_retries):
-        try:
-            fn(*args, **kwargs)
-            conn.commit()
-            return
-        except sqlite3.OperationalError as e:
-            if "database is locked" not in str(e):
-                raise
+    with _DB_WRITE_LOCK:
+        for attempt in range(max_retries):
             try:
-                conn.rollback()
-            except Exception:
-                pass
-            if attempt < max_retries - 1:
-                delay = base_delay * (2 ** attempt)
-                _log.warning(
-                    "DB locked on write batch (attempt %d/%d), retry in %.2fs",
-                    attempt + 1, max_retries, delay,
-                )
-                time.sleep(delay)
-            else:
-                _log.error("DB write locked: giving up after %d attempts", max_retries)
-                raise
+                fn(*args, **kwargs)
+                conn.commit()
+                return
+            except sqlite3.OperationalError as e:
+                err_msg = str(e).lower()
+                if "database is locked" not in err_msg and "busy" not in err_msg:
+                    raise
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                if attempt < max_retries - 1:
+                    delay = base_delay * (1.5 ** attempt)
+                    _log.warning(
+                        "DB locked on write batch (attempt %d/%d), retry in %.2fs",
+                        attempt + 1, max_retries, delay,
+                    )
+                    time.sleep(delay)
+                else:
+                    _log.error("DB write locked: giving up after %d attempts", max_retries)
+                    raise
 
 
-def commit_with_retry(conn: sqlite3.Connection, max_retries: int = 8, base_delay: float = 0.25) -> None:
+def commit_with_retry(conn: sqlite3.Connection, max_retries: int = 10, base_delay: float = 0.25) -> None:
     """Commit with exponential backoff on 'database is locked' errors.
 
     The busy_timeout PRAGMA handles short-lived locks, but when concurrent
     streaming stages all write at once, Python-level retry provides resilience
     for longer contentions (e.g., the apply process holding a write lock).
     """
-    for attempt in range(max_retries):
-        try:
-            conn.commit()
-            return
-        except sqlite3.OperationalError as e:
-            if "database is locked" not in str(e):
-                raise
-            if attempt < max_retries - 1:
-                delay = base_delay * (2 ** attempt)
-                _log.warning("DB locked on commit (attempt %d/%d), retry in %.2fs",
-                             attempt + 1, max_retries, delay)
-                time.sleep(delay)
-            else:
-                raise
+    with _DB_WRITE_LOCK:
+        for attempt in range(max_retries):
+            try:
+                conn.commit()
+                return
+            except sqlite3.OperationalError as e:
+                err_msg = str(e).lower()
+                if "database is locked" not in err_msg and "busy" not in err_msg:
+                    raise
+                if attempt < max_retries - 1:
+                    delay = base_delay * (1.5 ** attempt)
+                    _log.warning("DB locked on commit (attempt %d/%d), retry in %.2fs",
+                                 attempt + 1, max_retries, delay)
+                    time.sleep(delay)
+                else:
+                    raise
 
 
 def get_connection(db_path: Path | str | None = None) -> sqlite3.Connection:
@@ -111,9 +153,10 @@ def get_connection(db_path: Path | str | None = None) -> sqlite3.Connection:
         except sqlite3.ProgrammingError:
             pass
 
-    conn = sqlite3.connect(path, timeout=30)
+    conn = sqlite3.connect(path, timeout=60)
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=30000")
+    conn.execute("PRAGMA busy_timeout=60000")
+    conn.execute("PRAGMA synchronous=NORMAL")
     conn.row_factory = sqlite3.Row
     _local.connections[path] = conn
     return conn
@@ -546,7 +589,8 @@ VALID_TRANSITIONS: dict[str, frozenset[str]] = {
 def transition_state(conn: sqlite3.Connection, job_url: str, to_state: str,
                      reason: str | None = None,
                      metadata: dict | None = None,
-                     force: bool = False) -> bool:
+                     force: bool = False,
+                     commit: bool = False) -> bool:
     """Atomically transition a job to a new state and write an audit row.
 
     Validates the transition against VALID_TRANSITIONS unless force=True.
@@ -576,12 +620,15 @@ def transition_state(conn: sqlite3.Connection, job_url: str, to_state: str,
         import json as _json
         meta_json = _json.dumps(metadata, default=str)
 
-    conn.execute("UPDATE jobs SET state = ? WHERE url = ?", (to_state, job_url))
-    conn.execute(
-        "INSERT INTO job_state_transitions (job_url, from_state, to_state, at, reason, metadata) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (job_url, from_state, to_state, now, reason, meta_json),
-    )
+    with _DB_WRITE_LOCK:
+        conn.execute("UPDATE jobs SET state = ? WHERE url = ?", (to_state, job_url))
+        conn.execute(
+            "INSERT INTO job_state_transitions (job_url, from_state, to_state, at, reason, metadata) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (job_url, from_state, to_state, now, reason, meta_json),
+        )
+        if commit:
+            commit_with_retry(conn)
     return True
 
 
@@ -1807,8 +1854,9 @@ def create_stub_job(email: dict, classification: str,
     now = datetime.now(timezone.utc).isoformat()
     email_date = email.get("date", now)
 
-    conn.execute(
-        "INSERT INTO jobs (url, title, company, site, applied_at, apply_status, "
+    execute_write(
+        conn,
+        "INSERT OR IGNORE INTO jobs (url, title, company, site, applied_at, apply_status, "
         "                  discovered_at, tracking_status, tracking_updated_at, "
         "                  detail_error, detail_error_category) "
         "VALUES (?, ?, ?, 'manual', ?, 'applied', ?, ?, ?, "
@@ -1816,7 +1864,6 @@ def create_stub_job(email: dict, classification: str,
         (url, title.strip() or extracted_company or "Unknown Position",
          company, email_date, now, classification, now),
     )
-    commit_with_retry(conn)
     return url
 
 
@@ -1838,7 +1885,8 @@ def store_tracking_email(email: dict, conn: sqlite3.Connection | None = None) ->
     """
     if conn is None:
         conn = get_connection()
-    conn.execute(
+    execute_write(
+        conn,
         "INSERT OR IGNORE INTO tracking_emails "
         "(email_id, thread_id, job_url, sender, sender_name, subject, "
         " received_at, snippet, body_text, classification, extracted_data, classified_at) "
@@ -1852,14 +1900,14 @@ def store_tracking_email(email: dict, conn: sqlite3.Connection | None = None) ->
             email.get("classified_at"),
         ),
     )
-    commit_with_retry(conn)
 
 
 def store_tracking_person(person: dict, conn: sqlite3.Connection | None = None) -> None:
     """Insert a contact person into tracking_people (ignore duplicates)."""
     if conn is None:
         conn = get_connection()
-    conn.execute(
+    execute_write(
+        conn,
         "INSERT OR IGNORE INTO tracking_people "
         "(job_url, name, title, email, source_email_id, first_seen_at) "
         "VALUES (?, ?, ?, ?, ?, ?)",
@@ -1869,7 +1917,6 @@ def store_tracking_person(person: dict, conn: sqlite3.Connection | None = None) 
             person.get("first_seen_at"),
         ),
     )
-    commit_with_retry(conn)
 
 
 _TRACKING_PRIORITY = {
@@ -1913,26 +1960,28 @@ def update_tracking_status(job_url: str, new_status: str,
 
     if new_pri > current_pri:
         now = datetime.now(timezone.utc).isoformat()
-        conn.execute(
-            "UPDATE jobs SET tracking_status = ?, tracking_updated_at = ? WHERE url = ?",
-            (new_status, now, job_url),
-        )
-        commit_with_retry(conn)
-        # Also emit a state-machine transition so the canonical `state`
-        # column matches. transition_state validates against
-        # VALID_TRANSITIONS — if the job isn't in a state that legally
-        # moves to the target (e.g. still "applying"), the call returns
-        # False and `tracking_status` is left as-is. We don't propagate
-        # the failure since email-driven updates are advisory.
-        target_state = _TRACKING_TO_STATE.get(new_status)
-        if target_state:
-            try:
-                transition_state(
-                    conn, job_url, target_state,
-                    reason=f"tracking:{new_status}",
-                )
-            except (ValueError, sqlite3.OperationalError):
-                pass
+        with _DB_WRITE_LOCK:
+            execute_write(
+                conn,
+                "UPDATE jobs SET tracking_status = ?, tracking_updated_at = ? WHERE url = ?",
+                (new_status, now, job_url),
+            )
+            # Also emit a state-machine transition so the canonical `state`
+            # column matches. transition_state validates against
+            # VALID_TRANSITIONS — if the job isn't in a state that legally
+            # moves to the target (e.g. still "applying"), the call returns
+            # False and `tracking_status` is left as-is. We don't propagate
+            # the failure since email-driven updates are advisory.
+            target_state = _TRACKING_TO_STATE.get(new_status)
+            if target_state:
+                try:
+                    transition_state(
+                        conn, job_url, target_state,
+                        reason=f"tracking:{new_status}",
+                        commit=True,
+                    )
+                except (ValueError, sqlite3.OperationalError):
+                    pass
         return True
     return False
 
@@ -1946,8 +1995,7 @@ def update_job_tracking_fields(job_url: str, fields: dict,
         return
     set_clauses = ", ".join(f"{k} = ?" for k in fields)
     values = list(fields.values()) + [job_url]
-    conn.execute(f"UPDATE jobs SET {set_clauses} WHERE url = ?", values)
-    commit_with_retry(conn)
+    execute_write(conn, f"UPDATE jobs SET {set_clauses} WHERE url = ?", values)
 
 
 def get_tracking_emails(job_url: str, conn: sqlite3.Connection | None = None) -> list[dict]:
@@ -2071,7 +2119,8 @@ def store_qa(question: str, answer: str, source: str = "agent",
     now = datetime.now(timezone.utc).isoformat()
     key = question_key(question)
     try:
-        conn.execute(
+        execute_write(
+            conn,
             "INSERT INTO qa_knowledge "
             "(question_text, question_key, answer_text, answer_source, "
             " field_type, options_json, ats_slug, job_url, created_at) "
@@ -2082,7 +2131,6 @@ def store_qa(question: str, answer: str, source: str = "agent",
              field_type, options_json, ats_slug, job_url, now,
              now),
         )
-        commit_with_retry(conn)
         row = conn.execute(
             "SELECT id FROM qa_knowledge WHERE question_key = ? AND answer_text = ?",
             (key, answer),
@@ -2223,11 +2271,11 @@ def mark_qa_outcome(job_url: str, outcome: str,
     if conn is None:
         conn = get_connection()
     now = datetime.now(timezone.utc).isoformat()
-    cursor = conn.execute(
+    cursor = execute_write(
+        conn,
         "UPDATE qa_knowledge SET outcome = ?, updated_at = ? WHERE job_url = ?",
         (outcome, now, job_url),
     )
-    commit_with_retry(conn)
     return cursor.rowcount
 
 
@@ -2298,7 +2346,8 @@ def create_cv_tracker(
     """Enregistre un nouveau token de tracking pour un CV adapté ou profil (portfolio, linkedin, github)."""
     c = conn or get_connection()
     now_iso = datetime.now(timezone.utc).isoformat()
-    c.execute(
+    execute_write(
+        c,
         """
         INSERT OR REPLACE INTO cv_trackers
             (token, job_url, company, title, target_url, link_type, created_at)
@@ -2306,7 +2355,6 @@ def create_cv_tracker(
         """,
         (token, job_url, company, title, target_url, link_type, now_iso),
     )
-    commit_with_retry(c)
 
 
 def get_tracker(token: str, conn: sqlite3.Connection | None = None) -> dict | None:
@@ -2345,21 +2393,22 @@ def record_tracker_hit(
     first_open = row["opened_at"] or now_iso
     open_count = (row["open_count"] or 0) + 1
 
-    c.execute(
-        """
-        UPDATE cv_trackers
-        SET opened_at = ?,
-            last_opened_at = ?,
-            open_count = ?,
-            ip = ?,
-            user_agent = ?
-        WHERE token = ?
-        """,
-        (first_open, now_iso, open_count, ip, user_agent, token),
-    )
-    commit_with_retry(c)
-    updated = c.execute("SELECT * FROM cv_trackers WHERE token = ?", (token,)).fetchone()
-    return dict(updated) if updated else None
+    with _DB_WRITE_LOCK:
+        execute_write(
+            c,
+            """
+            UPDATE cv_trackers
+            SET opened_at = ?,
+                last_opened_at = ?,
+                open_count = ?,
+                ip = ?,
+                user_agent = ?
+            WHERE token = ?
+            """,
+            (first_open, now_iso, open_count, ip, user_agent, token),
+        )
+        updated = c.execute("SELECT * FROM cv_trackers WHERE token = ?", (token,)).fetchone()
+        return dict(updated) if updated else None
 
 
 def get_recent_trackers(limit: int = 15, conn: sqlite3.Connection | None = None) -> list[dict]:
