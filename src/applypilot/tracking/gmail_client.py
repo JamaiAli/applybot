@@ -29,7 +29,7 @@ GMAIL_MCP_DIR = Path.home() / ".gmail-mcp"
 OAUTH_KEYS_PATH = GMAIL_MCP_DIR / "gcp-oauth.keys.json"
 
 # In-memory mapping of email_id -> (imap_uid, folder_name)
-_IMAP_MSG_MAP: dict[str, tuple[str, str]] = {}
+_IMAP_MSG_MAP: dict[str, tuple[str, ...]] = {}
 
 
 def get_auth_mode() -> str:
@@ -620,20 +620,26 @@ def _imap_apply_label(email_ids: list[str], label: str = "ap-track") -> int:
     if not email_ids:
         return 0
 
-    # Seuls les messages Gmail supportent X-GM-LABELS
-    email_ids = [mid for mid in email_ids if _IMAP_MSG_MAP.get(mid, ("gmail",))[0] != "insa"]
+    # Seuls les messages Gmail supportent X-GM-LABELS (les emails INSA sont filtrés)
+    email_ids = [
+        mid for mid in email_ids
+        if not (_IMAP_MSG_MAP.get(mid) and len(_IMAP_MSG_MAP[mid]) == 3 and _IMAP_MSG_MAP[mid][0] == "insa")
+    ]
     if not email_ids:
         return 0
 
-    client = _get_imap_client()
+    client = None
     labeled = 0
 
     try:
+        client = _get_imap_client()
         current_folder = None
         for msg_id in email_ids:
             if msg_id not in _IMAP_MSG_MAP:
                 continue
-            uid, folder = _IMAP_MSG_MAP[msg_id]
+            info = _IMAP_MSG_MAP[msg_id]
+            uid = info[1] if len(info) == 3 else info[0]
+            folder = info[2] if len(info) == 3 else info[1]
             if folder != current_folder:
                 client.select(folder, readonly=False)
                 current_folder = folder
@@ -645,11 +651,14 @@ def _imap_apply_label(email_ids: list[str], label: str = "ap-track") -> int:
             except Exception as e:
                 log.debug("IMAP +X-GM-LABELS failed for %s: %s", msg_id, e)
 
+    except Exception as e:
+        log.warning("Impossible d'appliquer le label IMAP: %s", e)
     finally:
-        try:
-            client.logout()
-        except Exception:
-            pass
+        if client:
+            try:
+                client.logout()
+            except Exception:
+                pass
 
     return labeled
 
@@ -1002,11 +1011,14 @@ async def apply_label_to_emails(email_ids: list[str], label: str = "ap-track") -
     if not email_ids:
         return 0
 
-    mode = get_auth_mode()
-    if mode == "imap":
-        return await asyncio.to_thread(_imap_apply_label, email_ids, label)
-    elif mode == "mcp":
-        return await _mcp_apply_label(email_ids, label)
+    try:
+        mode = get_auth_mode()
+        if mode == "imap":
+            return await asyncio.to_thread(_imap_apply_label, email_ids, label)
+        elif mode == "mcp":
+            return await _mcp_apply_label(email_ids, label)
+    except Exception as e:
+        log.warning("Erreur lors de l'application du label '%s' : %s", label, e)
     return 0
 
 

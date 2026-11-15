@@ -231,3 +231,37 @@ def test_get_classified_emails(tmp_db):
 
     none_found = get_classified_emails("offer", conn=conn)
     assert len(none_found) == 0
+
+
+def test_imap_apply_label_3_tuple(monkeypatch):
+    """Test _imap_apply_label with 3-element tuples in _IMAP_MSG_MAP."""
+    from unittest.mock import MagicMock
+    from applypilot.tracking import gmail_client
+
+    mock_client = MagicMock()
+    mock_client.uid.return_value = ("OK", [b"dummy"])
+    monkeypatch.setattr(gmail_client, "_get_imap_client", lambda: mock_client)
+
+    gmail_client._IMAP_MSG_MAP.clear()
+    gmail_client._IMAP_MSG_MAP["msg_gmail"] = ("gmail", "101", "INBOX")
+    gmail_client._IMAP_MSG_MAP["msg_insa"] = ("insa", "202", "INBOX")
+    gmail_client._IMAP_MSG_MAP["msg_legacy"] = ("303", "[Gmail]/All Mail")
+
+    # msg_insa should be ignored, msg_gmail and msg_legacy labeled
+    count = gmail_client._imap_apply_label(["msg_gmail", "msg_insa", "msg_legacy"], label="ap-track")
+    assert count == 2
+    assert mock_client.uid.call_count == 2
+    mock_client.logout.assert_called_once()
+
+
+def test_apply_label_to_emails_resilient(monkeypatch):
+    """Test that apply_label_to_emails handles exceptions gracefully without raising."""
+    import pytest
+    from applypilot.tracking import gmail_client
+
+    monkeypatch.setattr(gmail_client, "get_auth_mode", lambda: "imap")
+    monkeypatch.setattr(gmail_client, "_imap_apply_label", MagicMock(side_effect=RuntimeError("IMAP boom")))
+
+    import asyncio
+    count = asyncio.run(gmail_client.apply_label_to_emails(["dummy_id"]))
+    assert count == 0

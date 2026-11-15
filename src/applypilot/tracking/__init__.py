@@ -485,9 +485,12 @@ def run_tracking(
             if triage.classification != "noise"
         ]
         if labeled_ids:
-            labeled_count = asyncio.run(apply_label_to_emails(labeled_ids))
-            if labeled_count:
-                console.print(f"  Labeled {labeled_count} emails with 'ap-track'")
+            try:
+                labeled_count = asyncio.run(apply_label_to_emails(labeled_ids))
+                if labeled_count:
+                    console.print(f"  Labeled {labeled_count} emails with 'ap-track'")
+            except Exception as e:
+                log.warning("Erreur non bloquante labellisation emails: %s", e)
 
     # 8. Detect ghosting
     ghosted_count = 0
