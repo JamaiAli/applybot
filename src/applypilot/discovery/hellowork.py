@@ -38,6 +38,7 @@ from bs4 import BeautifulSoup
 from applypilot import config
 from applypilot.database import get_connection, init_db, transition_state, execute_write
 from applypilot.discovery.ats_common import insert_normalized_jobs
+from applypilot.discovery.dates import age_days, to_dt
 
 log = logging.getLogger(__name__)
 
@@ -333,3 +334,143 @@ def run_hellowork_discovery(workers: int = 1, queries: list[str] | None = None) 
              grand_found, grand_new, grand_existing)
     return {"found": grand_found, "new": grand_new,
             "existing": grand_existing, "errors": errors}
+
+
+# ── Jobs étudiants & temps partiel (HelloWork) ──────────────────────────────
+
+EXCLU_STAGE_RE = re.compile(
+    r"(?<![a-z])(stage|stagiaire|alternance|alternant|apprenti|apprentissage)(?![a-z])",
+    re.IGNORECASE,
+)
+EXCLU_QUALIF_RE = re.compile(
+    r"\b(v[ée]t[ée]rinaire|m[ée]decin|chirurgien|dentiste|pharmacien|infirmier|infirmi[èe]re|sage-femme|kin[ée]sith[ée]rapeute)\b",
+    re.IGNORECASE,
+)
+
+STUDENT_QUERIES = [
+    "job étudiant",
+    "étudiant",
+    "temps partiel",
+    "équipier polyvalent",
+    "hôte de caisse",
+    "vendeur temps partiel",
+    "préparateur de commandes",
+    "manutentionnaire",
+    "inventaire",
+    "restauration rapide",
+]
+
+
+def search_hellowork_student_jobs(
+    location: str | list[str] = "Bourges",
+    limit: int = 15,
+    max_age_days: int = 14,
+    queries: list[str] | None = None,
+) -> list[dict]:
+    """Recherche les jobs étudiants et temps partiel sur HelloWork.
+
+    Filtre les stages/alternances, les professions hautement qualifiées/médicales,
+    et les offres déjà décidées ou postulées. Trie par fraîcheur (offres du jour
+    en tête, puis les plus récentes).
+    """
+    from applypilot import bot_core
+
+    locs = [location] if isinstance(location, str) else list(location)
+    target_queries = queries or STUDENT_QUERIES
+    seen_urls: set[str] = set()
+    seen_keys: set[tuple] = set()
+    offers: list[dict] = []
+
+    try:
+        with httpx.Client(follow_redirects=True) as client:
+            for loc in locs:
+                for q in target_queries:
+                    params = {"st": "date", "k": q, "l": loc}
+                    try:
+                        r = client.get(SEARCH_URL, params=params, headers=_HEADERS, timeout=15)
+                        if r.status_code != 200:
+                            continue
+                        soup = BeautifulSoup(r.text, "html.parser")
+                        cards = soup.select('li[data-cy*="offer"]') or soup.select("li")
+                        for card in cards:
+                            a = card.select_one('a[href*="/emplois/"]')
+                            if not a:
+                                continue
+                            href = a.get("href") or ""
+                            if not re.search(r"/emplois/\d+", href):
+                                continue
+                            url = href if href.startswith("http") else BASE + href
+                            if url in seen_urls:
+                                continue
+
+                            full = (a.get("title") or a.get_text(strip=True) or "").strip()
+                            if " - " in full:
+                                title, company = full.rsplit(" - ", 1)
+                            else:
+                                title, company = full, "HelloWork"
+
+                            aria = a.get("aria-label") or ""
+                            location_parsed = None
+                            if ", chez " in aria:
+                                left, company_part = aria.rsplit(", chez ", 1)
+                                if (not company or company == "HelloWork") and company_part.strip():
+                                    company = company_part.strip()
+                                if " à " in left:
+                                    location_parsed = left.rsplit(" à ", 1)[1].strip()
+                            elif " à " in aria:
+                                location_parsed = aria.rsplit(" à ", 1)[1].strip()
+
+                            title = title.strip()
+                            company = company.strip() or "HelloWork"
+
+                            if EXCLU_STAGE_RE.search(title) or EXCLU_QUALIF_RE.search(title):
+                                continue
+
+                            if bot_core.is_job_decided(url, title, company):
+                                continue
+
+                            card_text = card.get_text("\n", strip=True)
+                            dt = None
+                            for line in reversed(card_text.splitlines()):
+                                if any(w in line.lower() for w in ("il y a", "hier", "aujourd")):
+                                    dt = to_dt(line)
+                                    if dt:
+                                        break
+
+                            age = age_days(dt)
+                            if max_age_days and max_age_days > 0 and age is not None and age > max_age_days:
+                                continue
+
+                            norm_key = (bot_core._norm_key(title), bot_core._norm_key(company))
+                            if norm_key in seen_keys:
+                                continue
+
+                            seen_urls.add(url)
+                            seen_keys.add(norm_key)
+
+                            posted_iso = dt.isoformat(timespec="minutes") if dt else None
+                            offers.append({
+                                "url": url,
+                                "title": title,
+                                "employer_name": company,
+                                "location": location_parsed or loc,
+                                "application_url": url,
+                                "posted_at": posted_iso,
+                                "date_publication": posted_iso,
+                                "anciennete_jours": age,
+                                "source": "hellowork",
+                            })
+                    except Exception as exc:
+                        log.debug("HelloWork student query %r (loc=%r) : %s", q, loc, exc)
+    except Exception as exc:
+        log.warning("HelloWork search_hellowork_student_jobs exception: %s", exc)
+
+    def _sort_key(x):
+        age = x.get("anciennete_jours")
+        age_rank = max(0, age) if age is not None else 999
+        dt = to_dt(x.get("posted_at"))
+        ts = dt.timestamp() if dt else 0.0
+        return (age_rank, -ts)
+
+    offers.sort(key=_sort_key)
+    return offers[:limit] if limit and limit > 0 else offers

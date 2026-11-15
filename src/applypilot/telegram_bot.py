@@ -28,6 +28,8 @@ import html
 import logging
 import os
 import re
+from pathlib import Path
+import sqlite3
 import subprocess
 import sys
 
@@ -79,6 +81,20 @@ _INDEED_EVERY_TICKS = (max(1, round(INDEED_CYCLE_HOURS * 60 / CYCLE_MINUTES))
 
 # CV fixe pour les jobs étudiants / intérim (déposé par Ali).
 JOB_CV = config.APP_DIR / "cv_job_etudiant.pdf"
+
+
+def _get_python_exe() -> str:
+    """Retourne l'exécutable Python du venv ApplyPilot pour exécuter les sous-processus."""
+    venv_py = Path(sys.prefix) / "Scripts" / "python.exe"
+    if venv_py.exists():
+        return str(venv_py)
+    local_venv = Path(__file__).resolve().parent.parent.parent / ".venv" / "Scripts" / "python.exe"
+    if local_venv.exists():
+        return str(local_venv)
+    cwd_venv = Path.cwd() / ".venv" / "Scripts" / "python.exe"
+    if cwd_venv.exists():
+        return str(cwd_venv)
+    return sys.executable
 
 
 # ---------------------------------------------------------------------------
@@ -296,7 +312,7 @@ async def _run_search_and_post(bot, chat_id: int, limit: int, do_search: bool = 
         )
         await bot.send_message(
             chat_id,
-            f"Aucune offre Indeed{metier_label}{ville_label} récente (< 7j) à valider pour l'instant.{aide_txt}",
+            f"Aucune offre Indeed{metier_label}{ville_label} récente (&lt; 7j) à valider pour l'instant.{aide_txt}",
             parse_mode=ParseMode.HTML)
         return 0
 
@@ -321,6 +337,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "• <code>/search [métier] [ville]</code> — chercher sur Indeed (ex: <code>/search soc</code>, <code>/search pentest Paris</code>)\n"
         "• <code>/offres [métier] [ville]</code> — voir les offres en base (ex: <code>/offres soc</code>, <code>/offres ad</code>)\n"
         "• <code>/job</code> — jobs étudiants Bourges & Saint-Doulchard\n"
+        "• <code>/experience</code> — ajouter un projet ou une expérience à ton profil\n"
         "• <code>/track</code> — scanner les réponses recruteurs sur Gmail\n"
         "• <code>/status</code> — état du pipeline et de la veille auto\n\n"
         "Sur chaque offre : ✅ Valider · ✏️ Modifier · ❌ Ignorer.\n"
@@ -338,20 +355,27 @@ async def commandes_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "🤖 <b>Toutes les commandes d'ApplyPilot</b>\n\n"
         "🎯 <b>Recherche & Offres Cybersécurité</b>\n"
         "• <code>/scan [métier] [ville] [limite]</code> — ⚡ Scan en temps réel des sites (HelloWork, Indeed) : ignore tout ce qui est déjà en base et diffuse les toutes dernières offres en direct !\n"
+        "• <code>/hellowork [métier] [ville] [limite]</code> — ⚡ Même scan en temps réel, mais sur HelloWork uniquement (ex : <code>/hellowork soc</code>, <code>/hellowork pentest Paris</code>)\n"
         "• <code>/search [métier] [ville] [limite]</code> — Recherche ciblée en direct sur Indeed + scoring IA (ex : <code>/search soc</code>, <code>/search pentest Paris</code>, <code>/search ad 10</code>)\n"
         "• <code>/offres [métier] [ville] [limite]</code> — Affiche les offres fraîches (≤ 7 jours, aujourd'hui en tête) prêtes en base (ex : <code>/offres soc</code>, <code>/offres Paris</code>)\n\n"
         "💼 <b>Jobs Étudiants & Intérim</b>\n"
-        "• <code>/job [ville]</code> — Recherche live de jobs étudiants, temps partiel et intérim (par défaut Bourges & Saint-Doulchard)\n\n"
+        "• <code>/job [ville]</code> — Jobs étudiants et missions intérim en présentiel sur Indeed (Bourges par défaut, ou ex: /job Orléans)\n"
+        "• <code>/jobhellowork [ville]</code> — Jobs étudiants sur HelloWork (Bourges et ses alentours par défaut, ou ex: /jobhellowork Vierzon)\n"
+        "• <code>/jobdistant</code> — Jobs étudiants et missions intérim en 100% télétravail (France entière)\n\n"
         "📬 <b>Suivi Recruteurs & Boîte Gmail</b>\n"
         "• <code>/track [jours]</code> — Analyse ta boîte Gmail pour détecter et classifier les réponses recruteurs (défaut : 7 jours)\n"
         "• <code>/confirmees</code> — Affiche le récapitulatif détaillé des candidatures confirmées et en cours\n"
         "• <code>/refus</code> — Liste les refus reçus avec entreprises, postes et dates\n"
         "• <code>/trackers</code> — Suivi des ouvertures de tes CV par les recruteurs (liens traceurs cliqués)\n\n"
+        "🗂️ <b>Profil & Expériences Candidat</b>\n"
+        "• <code>/experience [description]</code> — Ajouter un nouveau projet ou une expérience technique à ton profil (format ATS auto)\n\n"
         "⚙️ <b>Gestion & Contrôle du Bot</b>\n"
         "• <code>/status</code> — Bilan global du pipeline (offres en base, scores, veille)\n"
         "• <code>/pause</code> — Met en pause la veille automatique (toutes les 10 min)\n"
         "• <code>/resume</code> — Réactive la veille automatique\n"
         "• <code>/clean</code> — Supprime les messages récents du bot (moins de 48h) dans cette discussion\n"
+        "• <code>/compteur</code> — Nombre de candidatures envoyées aujourd'hui et au total\n"
+        "• <code>/toutes</code> — Liste complète et paginée de toutes les candidatures envoyées\n"
         "• <code>/done</code> — Marque la dernière offre préparée comme postulée\n"
         "• <code>/commandes</code> — Affiche ce menu d'aide complet\n\n"
         "💡 <i>Sur chaque offre présentée, clique sur ✅ Valider, ✏️ Modifier ou ❌ Ignorer. Rien n'est envoyé sans ton accord !</i>"
@@ -365,12 +389,26 @@ async def commandes_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text(plain_msg)
 
 
+_SOURCE_LABELS = {"hellowork": "HelloWork", "indeed": "Indeed"}
+
+
+async def hellowork_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/hellowork [métier] [ville] [limite] : scanne en temps réel HelloWork seulement."""
+    await _live_scan(update, context, sources=("hellowork",))
+
+
 async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Scanne en temps réel les sites d'offres (HelloWork, Indeed), filtre tout ce qui est
+    """/scan [métier] [ville] [limite] : scanne en temps réel HelloWork et Indeed."""
+    await _live_scan(update, context, sources=("hellowork", "indeed"))
+
+
+async def _live_scan(update: Update, context: ContextTypes.DEFAULT_TYPE, sources: tuple[str, ...]) -> None:
+    """Scanne en temps réel les sites d'offres demandés, filtre tout ce qui est
     déjà présent en base, et diffuse immédiatement les toutes dernières offres inédites."""
     if not _authorized(update):
         return await _deny(update)
 
+    sites = " et ".join(_SOURCE_LABELS.get(s, s) for s in sources)
     metier, city, limit = _parse_search_args(context.args, MAX_CARDS)
     chat_id = update.effective_chat.id
 
@@ -378,8 +416,8 @@ async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     ville_label = f" à <b>{html.escape(city)}</b>" if city else ""
 
     status_msg = await update.message.reply_text(
-        f"⚡ <b>Scan en temps réel des sites d'offres{metier_label}{ville_label}…</b>\n\n"
-        f"📡 <i>Interrogation en direct de HelloWork et Indeed pour dénicher les offres les plus fraîches qui ne sont <b>pas encore</b> dans ta base…</i>",
+        f"⚡ <b>Scan en temps réel de {sites}{metier_label}{ville_label}…</b>\n\n"
+        f"📡 <i>Interrogation en direct de {sites} pour dénicher les offres les plus fraîches qui ne sont <b>pas encore</b> dans ta base…</i>",
         parse_mode=ParseMode.HTML,
     )
 
@@ -400,21 +438,25 @@ async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         queries_indeed = None
         queries_hw = None
         if metier:
-            from applypilot.discovery import indeed as _ind
-            m_lower = metier.lower()
-            for dom_name, q_list in _ind.QUERIES.items():
-                if m_lower in dom_name.lower() or any(m_lower in q.lower() for q in q_list):
-                    queries_indeed = {dom_name: q_list}
-                    break
-            if not queries_indeed:
-                queries_indeed = {f"Scan {metier}": [f"stage {metier}", f"alternance {metier}", metier]}
+            if "indeed" in sources:
+                from applypilot.discovery import indeed as _ind
+                m_lower = metier.lower()
+                for dom_name, q_list in _ind.QUERIES.items():
+                    if m_lower in dom_name.lower() or any(m_lower in q.lower() for q in q_list):
+                        queries_indeed = {dom_name: q_list}
+                        break
+                if not queries_indeed:
+                    queries_indeed = {f"Scan {metier}": [f"stage {metier}", f"alternance {metier}", metier]}
             queries_hw = [f"stage {metier}", f"alternance {metier}", metier]
 
         def _do_live_scan():
+            q_to_use = None
+            if metier:
+                q_to_use = (queries_indeed or queries_hw) if "indeed" in sources else queries_hw
             pipeline._run_discover(
                 workers=1,
-                sources=["hellowork", "indeed"],
-                queries=queries_indeed or queries_hw,
+                sources=list(sources),
+                queries=q_to_use,
                 location=city,
             )
             all_urls = bot_core.get_all_job_urls()
@@ -428,7 +470,7 @@ async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not newly_found_urls:
             metier_hint = f" {html.escape(metier)}" if metier else ""
             await status_msg.edit_text(
-                f"✅ <b>Scan en direct terminé</b> : Aucune nouvelle offre détectée sur les sites (toutes les offres en ligne font déjà partie de ta base de données).\n\n"
+                f"✅ <b>Scan en direct terminé</b> : Aucune nouvelle offre détectée sur {sites}.\n\n"
                 f"💡 <i>Pour voir les offres fraîches déjà qualifiées en base, tape <code>/offres{metier_hint}</code> !</i>",
                 parse_mode=ParseMode.HTML,
             )
@@ -454,7 +496,7 @@ async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
         if not offers:
             await status_msg.edit_text(
-                f"📊 <b>Scan en direct terminé</b> : <b>{len(newly_found_urls)}</b> nouvelle(s) offre(s) scannée(s) sur le web, "
+                f"📊 <b>Scan en direct terminé</b> : <b>{len(newly_found_urls)}</b> nouvelle(s) offre(s) scannée(s) sur {sites}, "
                 f"mais aucune ne correspondait suffisamment à tes critères de stage (score trop bas ou hors-sujet).\n\n"
                 f"💡 <i>Toutes ces offres ont été enregistrées en base pour l'historique.</i>",
                 parse_mode=ParseMode.HTML,
@@ -462,14 +504,15 @@ async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
 
         await status_msg.edit_text(
-            f"🆕 <b>{len(offers)} nouvelle(s) offre(s) inédite(s) trouvée(s) en direct !</b> Envoi en cours…",
+            f"🎯 <b>{len(offers)} nouvelle(s) offre(s) fraîche(s) détectée(s) sur {sites} !</b>\n"
+            f"<i>Envoi en cours…</i>",
             parse_mode=ParseMode.HTML,
         )
 
         for row in offers:
             await _send_offer(context.bot, chat_id, row)
 
-        await asyncio.to_thread(bot_core.mark_notified, [o["url"] for o in offers])
+        await asyncio.to_thread(bot_core.mark_notified, [o["url"] for o in offers if "url" in o])
 
         await context.bot.send_message(
             chat_id,
@@ -478,7 +521,7 @@ async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
 
     except Exception as exc:
-        log.exception("Erreur lors du scan en temps réel : %s", exc)
+        log.exception("Erreur lors du scan en temps réel %s : %s", sites, exc)
         await status_msg.edit_text(f"⚠️ Erreur lors du scan : {html.escape(str(exc))}", parse_mode=ParseMode.HTML)
     finally:
         typing_task.cancel()
@@ -575,7 +618,9 @@ async def _send_job_list(bot, chat_id: int, titre: str, jobs: list[dict]) -> Non
     await bot.send_message(chat_id, f"<b>{html.escape(titre)}</b> — {len(jobs)} offre(s)",
                            parse_mode=ParseMode.HTML)
     for j in jobs:
-        h = bot_core.remember(j["url"])
+        url = j["url"]
+        h = bot_core.remember(url)
+        bot_core.mark_student_job(url, title=j.get("title", ""), employer=j.get("employer_name", ""))
         t = html.escape((j.get("title") or "")[:90])
         comp = html.escape((j.get("employer_name") or "")[:40])
         loc = html.escape((j.get("location") or "")[:40])
@@ -587,6 +632,8 @@ async def _send_job_list(bot, chat_id: int, titre: str, jobs: list[dict]) -> Non
                 extra.append(f"🔥 <b>{age}</b>")
             else:
                 extra.append(f"📅 {age}")
+        if j.get("is_remote") or any(k in loc.lower() for k in ("télétravail", "teletravail", "remote", "distanciel")):
+            extra.append("🌐 100% Télétravail")
         if j.get("week_end"):
             extra.append("🗓️ week-end")
         if extra:
@@ -595,8 +642,9 @@ async def _send_job_list(bot, chat_id: int, titre: str, jobs: list[dict]) -> Non
             InlineKeyboardButton("🚀 Postuler", callback_data=f"jobapply:{h}"),
             InlineKeyboardButton("Voir l'offre", url=j["url"]),
         ]])
-        await bot.send_message(chat_id, txt, parse_mode=ParseMode.HTML,
-                               reply_markup=kb, disable_web_page_preview=True)
+        msg = await bot.send_message(chat_id, txt, parse_mode=ParseMode.HTML,
+                                     reply_markup=kb, disable_web_page_preview=True)
+        bot_core.set_card_message(url, msg.message_id)
         await asyncio.sleep(0.25)
 
 
@@ -617,6 +665,9 @@ def _merge_student_jobs(*lists: list[dict]) -> list[dict]:
                    bot_core._norm_key(j.get("location")))
             if key in seen_key:
                 continue
+            # Exclure les offres déjà postulées ou ignorées
+            if u and bot_core.is_job_decided(u, j.get("title", ""), j.get("employer_name", "")):
+                continue
             if u:
                 seen_url.add(u)
             seen_key.add(key)
@@ -625,89 +676,323 @@ def _merge_student_jobs(*lists: list[dict]) -> list[dict]:
 
 
 async def done_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Marque comme POSTULÉE la dernière offre pour laquelle tu as cliqué
-    « 📨 Préparer ma candidature »."""
+    """Marque comme POSTULÉE la dernière offre préparée ou modifiée.
+    Accepte aussi un mot-clé ou entreprise : /done cnil, /done orange."""
     if not _authorized(update):
         return await _deny(update)
-    url = bot_core.get_last_prepared()
+
+    url: str | None = None
+    args = [a.strip() for a in (context.args or []) if a.strip()]
+
+    # Si l'utilisateur passe des arguments (ex: /done cnil, /done orange)
+    if args:
+        kw = " ".join(args).lower()
+        conn = bot_core.get_connection()
+        conn.row_factory = sqlite3.Row
+        matched = conn.execute(
+            """
+            SELECT url, title, company, site, apply_status
+            FROM jobs
+            WHERE (LOWER(COALESCE(title, '')) LIKE ? OR LOWER(COALESCE(company, '')) LIKE ? OR LOWER(COALESCE(site, '')) LIKE ?)
+            ORDER BY (COALESCE(apply_status, '') IN ('edit_requested', 'prepared')) DESC, discovered_at DESC
+            LIMIT 1
+            """,
+            (f"%{kw}%", f"%{kw}%", f"%{kw}%"),
+        ).fetchone()
+        if matched:
+            url = matched["url"]
+
+    # Sinon : résolution intelligente
+    if not url:
+        cand_url = context.user_data.get("last_prepared_url")
+        if cand_url:
+            r = bot_core.fetch_one(cand_url)
+            if not r or r.get("apply_status") != "applied":
+                url = cand_url
+
+    if not url:
+        cand_url = bot_core.get_last_prepared()
+        if cand_url:
+            r = bot_core.fetch_one(cand_url)
+            if not r or r.get("apply_status") != "applied":
+                url = cand_url
+
+    if not url:
+        conn = bot_core.get_connection()
+        conn.row_factory = sqlite3.Row
+        fallback = conn.execute(
+            """
+            SELECT url, title, company, site, apply_status
+            FROM jobs
+            WHERE apply_status IN ('edit_requested', 'prepared', 'ready_to_apply')
+            ORDER BY discovered_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        if fallback:
+            url = fallback["url"]
+
+    if not url:
+        url = bot_core.get_last_prepared()
+
     if not url:
         await update.message.reply_text(
-            "Aucune candidature récente à marquer. Clique d'abord "
-            "« 📨 Préparer ma candidature » sur une offre.")
+            "Aucune candidature récente à marquer.\n"
+            "Clique d'abord sur « 📨 Préparer ma candidature » ou utilise "
+            "<code>/done &lt;entreprise_ou_mot_clé&gt;</code> (ex: <code>/done cnil</code>).",
+            parse_mode=ParseMode.HTML)
         return
+
     row = bot_core.fetch_one(url) or {}
     bot_core.set_apply_status(url, "applied")
-    # Supprime la carte de l'offre déjà affichée dans le fil.
+    bot_core.set_last_prepared(url)
+    context.user_data["last_prepared_url"] = url
+
     mid = bot_core.get_card_message(url)
     if mid:
         try:
             await context.bot.delete_message(update.effective_chat.id, mid)
         except Exception:
             pass
-    titre = (row.get("title") or "l'offre")[:80]
+
+    # Récupération du titre et de l'entreprise (avec fallback student_jobs.json)
+    titre = row.get("title")
+    comp = bot_core.display_company(row)
+    if not titre or not comp or comp == "—":
+        st_job = bot_core._load_student_jobs().get(url) or {}
+        titre = titre or st_job.get("title")
+        if not comp or comp == "—":
+            comp = st_job.get("employer") or ""
+    titre = (titre or "Job étudiant / intérim")[:80]
+    comp_txt = f" chez <b>{html.escape(comp)}</b>" if comp and comp != "—" else ""
     await update.message.reply_text(
-        f"✅ Marquée « postulée » : {titre}. Bravo 🎉")
+        f"✅ Marquée « postulée » : <b>{html.escape(titre)}</b>{comp_txt}. Bravo 🎉\n"
+        f"💡 <i>Cette offre (et ses doublons) ne te sera plus jamais représentée.</i>",
+        parse_mode=ParseMode.HTML)
+
+
+def _build_compteur_message(counts: dict) -> tuple[str, InlineKeyboardMarkup]:
+    """Construit le texte et le bouton du compteur."""
+    today_cnt = counts.get("today_count", 0)
+    total_cnt = counts.get("total_count", 0)
+    today_jobs = counts.get("today_jobs", [])
+    daily_counts = counts.get("daily_counts", {})
+
+    import zoneinfo
+    from datetime import datetime
+    paris_tz = zoneinfo.ZoneInfo("Europe/Paris")
+    today = datetime.now(paris_tz).date()
+
+    lines = [
+        "📊 <b>Compteur de candidatures ApplyPilot</b>\n",
+        f"🎯 <b>Aujourd'hui ({today.strftime('%d/%m/%Y')}) :</b> <b>{today_cnt}</b> candidature(s) envoyée(s)",
+        f"📈 <b>Total cumulé :</b> <b>{total_cnt}</b> candidature(s) envoyée(s)\n",
+    ]
+
+    if today_jobs:
+        lines.append("📋 <b>Candidatures envoyées aujourd'hui :</b>")
+        for j in today_jobs[:12]:
+            comp = html.escape(j.get("company", "Entreprise")[:25])
+            titre = html.escape(j.get("title", "Poste")[:50])
+            heure = j.get("time", "")
+            lines.append(f"• <code>{heure}</code> — <b>{comp}</b> : <i>{titre}</i>")
+        if len(today_jobs) > 12:
+            lines.append(f"<i>... et {len(today_jobs) - 12} autre(s) candidature(s) aujourd'hui.</i>")
+        lines.append("")
+
+    recent_dates = sorted(daily_counts.keys(), reverse=True)
+    if len(recent_dates) > 1:
+        lines.append("📅 <b>Activité récente :</b>")
+        for d_str in recent_dates[:7]:
+            c = daily_counts[d_str]
+            try:
+                d_obj = datetime.strptime(d_str, "%Y-%m-%d").date()
+                if d_obj == today:
+                    label = f"Aujourd'hui ({d_obj.strftime('%d/%m')})"
+                elif (today - d_obj).days == 1:
+                    label = f"Hier ({d_obj.strftime('%d/%m')})"
+                else:
+                    label = d_obj.strftime("%d/%m")
+            except Exception:
+                label = d_str
+            lines.append(f"• {label} : <b>{c}</b>")
+
+    lines.append("\n💡 <i>Astuce : tape <b>/done</b> après avoir postulé pour incrémenter le compteur instantanément !</i>")
+    msg = "\n".join(lines)
+
+    kb = [
+        [InlineKeyboardButton(f"📋 Voir toutes les candidatures ({total_cnt})", callback_data="all_apps:1")],
+        [InlineKeyboardButton("📄 Télécharger la liste (.txt)", callback_data="export_apps_txt")]
+    ]
+    return msg, InlineKeyboardMarkup(kb)
+
+
+def _build_all_apps_page(all_jobs: list[dict], page: int = 1, page_size: int = 10) -> tuple[str, InlineKeyboardMarkup]:
+    """Construit la page paginée de toutes les candidatures."""
+    total_jobs = len(all_jobs)
+    total_pages = max(1, (total_jobs + page_size - 1) // page_size)
+    page = max(1, min(page, total_pages))
+
+    start_idx = (page - 1) * page_size
+    end_idx = min(start_idx + page_size, total_jobs)
+    slice_jobs = all_jobs[start_idx:end_idx]
+
+    lines = [
+        f"📋 <b>Toutes vos candidatures envoyées</b> (Page {page}/{total_pages} — {total_jobs} au total) :\n"
+    ]
+
+    for idx, j in enumerate(slice_jobs, start=start_idx + 1):
+        comp = html.escape(j.get("company", "Entreprise")[:25])
+        titre = html.escape(j.get("title", "Poste")[:50])
+        dt_label = "Aujourd'hui " + j.get("time", "") if j.get("is_today") else f"{j.get('date_short', '')} {j.get('time', '')}".strip()
+        if not dt_label:
+            dt_label = "Postulée"
+        url = j.get("url")
+        if url and url.startswith("http"):
+            titre_display = f'<a href="{html.escape(url)}">{titre}</a>'
+        else:
+            titre_display = f"<i>{titre}</i>"
+        lines.append(f"<b>#{idx}</b> [<code>{dt_label}</code>] <b>{comp}</b>\n└ {titre_display}")
+
+    msg = "\n".join(lines)
+
+    nav_row = []
+    if page > 1:
+        nav_row.append(InlineKeyboardButton("◀️ Précédent", callback_data=f"all_apps:{page - 1}"))
+    nav_row.append(InlineKeyboardButton(f"📄 {page}/{total_pages}", callback_data="noop"))
+    if page < total_pages:
+        nav_row.append(InlineKeyboardButton("Suivant ▶️", callback_data=f"all_apps:{page + 1}"))
+
+    kb = [nav_row]
+    kb.append([
+        InlineKeyboardButton("📄 Télécharger (.txt)", callback_data="export_apps_txt"),
+        InlineKeyboardButton("📊 Retour au compteur", callback_data="back_compteur")
+    ])
+
+    return msg, InlineKeyboardMarkup(kb)
+
+
+async def compteur_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Affiche le nombre de candidatures envoyées aujourd'hui et au total."""
+    if not _authorized(update):
+        return await _deny(update)
+
+    target_msg = update.message if update.message is not None else update.effective_message
+    if not target_msg:
+        return
+
+    try:
+        counts = await asyncio.to_thread(bot_core.get_application_counts)
+        msg, reply_markup = _build_compteur_message(counts)
+        try:
+            await target_msg.reply_text(msg, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+        except Exception:
+            import re as _re
+            plain_msg = _re.sub(r'<[^>]+>', '', msg)
+            await target_msg.reply_text(plain_msg, reply_markup=reply_markup)
+    except Exception as exc:
+        log.exception("Erreur dans compteur_cmd : %s", exc)
+        await target_msg.reply_text(f"⚠️ Erreur lors du calcul du compteur : {exc}")
+
+
+async def toutes_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Affiche la liste paginée de toutes les candidatures envoyées."""
+    if not _authorized(update):
+        return await _deny(update)
+
+    target_msg = update.message if update.message is not None else update.effective_message
+    if not target_msg:
+        return
+
+    try:
+        all_jobs = await asyncio.to_thread(bot_core.get_all_applied_jobs)
+        msg, reply_markup = _build_all_apps_page(all_jobs, page=1)
+        try:
+            await target_msg.reply_text(msg, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+        except Exception:
+            import re as _re
+            plain_msg = _re.sub(r'<[^>]+>', '', msg)
+            await target_msg.reply_text(plain_msg, reply_markup=reply_markup)
+    except Exception as exc:
+        log.exception("Erreur dans toutes_cmd : %s", exc)
+        await target_msg.reply_text(f"⚠️ Erreur lors de la récupération des candidatures : {exc}")
+
+
+def format_trackers_report(overview: dict, sync: dict | None = None) -> str:
+    """Met en forme le rapport de consultation des CV (Tracer Links)."""
+    from applypilot.config import tracer_is_public
+    lines = []
+
+    # 1. État du suivi
+    if tracer_is_public():
+        lines.append("📡 <b>Suivi actif</b>")
+    else:
+        lines.append("📡 <b>Suivi inactif</b> (liens locaux <code>localhost</code>)\nPour l'activer : <code>deploy_tracer_worker.ps1</code>")
+
+    # 2. Synchronisation distante (Cloudflare Worker)
+    if sync:
+        if sync.get("error"):
+            lines.append(f"⚠️ Clics distants non récupérés : {html.escape(str(sync['error']))}")
+        elif sync.get("new", 0) > 0:
+            bot_text = f" ({sync.get('bots', 0)} clic(s) robot ignoré(s))" if sync.get("bots") else ""
+            lines.append(f"☁️ <b>{sync['new']}</b> nouveau(x) clic(s) enregistrés pendant le PC éteint{bot_text}.")
+
+    # 3. Statistiques globales
+    offers = overview.get("offers", [])
+    total_offers = len(offers)
+    opened_offers = sum(1 for o in offers if o.get("opens", 0) > 0)
+    total_clicks = sum(o.get("opens", 0) for o in offers)
+    lines.append(f"Offres suivies : <b>{total_offers}</b> · consultées : <b>{opened_offers}</b> · clics : <b>{total_clicks}</b>")
+    lines.append("")
+
+    # 4. Détail par offre
+    opened = [o for o in offers if o.get("opens", 0) > 0]
+    unopened = [o for o in offers if o.get("opens", 0) == 0]
+
+    for o in opened:
+        comp = html.escape(str(o.get("company") or "Entreprise"))
+        tit = html.escape(str(o.get("title") or "Offre"))
+        links = o.get("links", {})
+        l_in = links.get("linkedin", 0)
+        gh = links.get("github", 0)
+        pf = links.get("portfolio", 0)
+        lines.append(f"• <b>{comp}</b> — {tit} : <b>{o.get('opens', 0)}</b> clic(s) (💼 {l_in} · 🐙 {gh} · 🌐 {pf})")
+
+    if unopened:
+        if opened:
+            lines.append("")
+        lines.append("<b>Non consultées :</b>")
+        for o in unopened[:5]:
+            comp = html.escape(str(o.get("company") or "Entreprise"))
+            tit = html.escape(str(o.get("title") or "Offre"))
+            lines.append(f"• {comp} — {tit}")
+        if len(unopened) > 5:
+            lines.append(f"• … et {len(unopened) - 5} autres offres pas encore consultées")
+
+    orphans = overview.get("orphans", 0)
+    if orphans:
+        lines.append("")
+        lines.append(f"<i>({orphans} liens sans offre)</i>")
+
+    return "\n".join(lines)
 
 
 async def trackers_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Affiche les statistiques et dernières consultations de CV et profils (Portfolio, LinkedIn, GitHub)."""
     if not _authorized(update):
         return await _deny(update)
-    from applypilot.database import get_recent_trackers, get_tracker_stats
-    from applypilot.tracking.tracer import parse_user_agent
-    stats = get_tracker_stats()
-    by_type = stats.get("by_type", {})
-    recent = get_recent_trackers(15)
-    lines = [
-        "📊 <b>Suivi des consultations (Tracer Links)</b>",
-        f"• Total liens tracés : <b>{stats['total_trackers']}</b>",
-        f"• Liens ouverts par un recruteur : <b>{stats['opened_trackers']}</b>",
-        f"• Total clics / consultations : <b>{stats['total_opens']}</b>",
-        "",
-        "🎯 <b>Détail des ouvertures :</b>",
-        f"  🌐 Portfolio : <b>{by_type.get('portfolio', 0)}</b> consultation(s)",
-        f"  💼 LinkedIn : <b>{by_type.get('linkedin', 0)}</b> consultation(s)",
-        f"  🐙 GitHub : <b>{by_type.get('github', 0)}</b> consultation(s)",
-        "",
-        f"• Serveur traceur : <code>{config.TRACER_BASE_URL}</code>",
-        "",
-    ]
-    if not recent:
-        lines.append("<i>Aucun traceur enregistré pour le moment.</i>")
-    else:
-        lines.append("<b>Dernières consultations :</b>")
-        for t in recent:
-            comp = html.escape(t.get("company") or "Entreprise")
-            tit = html.escape((t.get("title") or "Offre")[:32])
-            ltype = t.get("link_type", "portfolio")
-            badge = {
-                "linkedin": "💼 LinkedIn",
-                "github": "🐙 GitHub",
-                "portfolio": "🌐 Portfolio",
-            }.get(ltype, f"🔗 {ltype.capitalize()}")
-            cnt = t.get("open_count") or 0
-            if cnt > 0:
-                dev = html.escape(parse_user_agent(t.get("user_agent")))
-                dt = t.get("last_opened_at") or t.get("opened_at") or ""
-                dt_str = _format_date_fr(dt) if dt else ""
-                lines.append(
-                    f"🟢 <b>{comp}</b> — {tit} [{badge}]\n"
-                    f"   ↳ <b>{cnt} clic(s)</b> (Dernier : {dt_str} via {dev})"
-                )
-            else:
-                lines.append(f"⚪ <b>{comp}</b> — {tit} [{badge}]\n   ↳ <i>Pas encore ouvert</i>")
+    from applypilot.database import get_tracker_overview
+    sync_res = None
+    try:
+        from applypilot.tracking import remote
+        sync_res = remote.sync_hits()
+    except Exception:
+        pass
+    overview = get_tracker_overview()
+    report = format_trackers_report(overview, sync=sync_res)
+    target = update.callback_query.message if update.callback_query else update.message
+    await target.reply_text(report, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
-    lines.append("")
-    lines.append("🔗 <b>Tes liens permanents traqués :</b>")
-    lines.append(f"• 💼 LinkedIn : <code>{config.TRACER_BASE_URL}/t/linkedin</code>")
-    lines.append(f"• 🐙 GitHub : <code>{config.TRACER_BASE_URL}/t/github</code>")
-    lines.append(f"• 🌐 Portfolio : <code>{config.TRACER_BASE_URL}/t/portfolio</code>")
-
-    await update.effective_message.reply_text(
-        "\n".join(lines),
-        parse_mode=ParseMode.HTML,
-        disable_web_page_preview=True,
-    )
 
 def _format_tracking_event(ev: dict) -> str:
     """Formate un événement de réponse recruteur pour Telegram."""
@@ -1093,6 +1378,102 @@ async def job_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             pass
 
 
+async def jobdistant_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Jobs étudiants + missions intérim en 100% télétravail (France entière).
+    Usage : /jobdistant"""
+    if not _authorized(update):
+        return await _deny(update)
+
+    chat_id = update.effective_chat.id
+    try:
+        await context.bot.send_message(
+            chat_id, "🌐 Recherche des <b>jobs étudiants</b> et <b>missions intérim à distance</b> (100% télétravail, France entière)...",
+            parse_mode=ParseMode.HTML)
+    except Exception as exc:
+        log.warning("Notification initiale jobdistant_cmd : %s", exc)
+
+    from applypilot.discovery import indeed_student
+
+    etu = []
+    inter = []
+    try:
+        etu = await asyncio.to_thread(indeed_student.search_remote_student_jobs, 10, 14)
+    except Exception as exc:
+        log.warning("Jobs étudiants distants échoués : %s", exc)
+
+    try:
+        inter = await asyncio.to_thread(indeed_student.search_remote_interim_jobs, 10, 14)
+    except Exception as exc:
+        log.warning("Missions intérim distantes échouées : %s", exc)
+
+    etu = indeed_student.sort_offers(etu, sort="date", max_age_days=14)
+    inter = indeed_student.sort_offers(inter, sort="date", max_age_days=14)
+
+    try:
+        await _send_job_list(context.bot, chat_id, "🎓 Jobs étudiants à distance (France entière — 100% Télétravail)", etu[:10])
+        await _send_job_list(context.bot, chat_id, "🛠️ Missions intérim à distance (France entière — 100% Télétravail)", inter[:10])
+    except Exception as exc:
+        log.warning("Envoi job_list distant échoué : %s", exc)
+
+    if not etu and not inter:
+        try:
+            await context.bot.send_message(
+                chat_id,
+                "⚠️ Aucune offre récente à distance (< 14 jours) trouvée sur Indeed pour le moment.\n"
+                "💡 <i>Astuce : tu peux aussi utiliser <code>/job</code> pour voir les offres physiques à proximité.</i>",
+                parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
+
+
+async def jobhellowork_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Jobs étudiants sur HelloWork à Bourges et ses alentours (ou ville passée en paramètre).
+    Usage : /jobhellowork [ville]"""
+    if not _authorized(update):
+        return await _deny(update)
+
+    raw_arg = " ".join(context.args).strip() if context.args else ""
+    if not raw_arg or raw_arg.lower() in ("bourges", "saint-doulchard", "saint doulchard", "doulchard"):
+        ville = "Bourges"
+        display_ville = "Bourges et alentours"
+    else:
+        ville = raw_arg
+        display_ville = raw_arg
+
+    chat_id = update.effective_chat.id
+    try:
+        await context.bot.send_message(
+            chat_id,
+            f"🔍 Recherche des <b>jobs étudiants</b> sur <b>HelloWork</b> à <b>{html.escape(display_ville)}</b>...",
+            parse_mode=ParseMode.HTML)
+    except Exception as exc:
+        log.warning("Notification initiale jobhellowork_cmd : %s", exc)
+
+    from applypilot.discovery import hellowork
+
+    jobs = []
+    try:
+        jobs = await asyncio.to_thread(hellowork.search_hellowork_student_jobs, ville, 12, 14)
+    except Exception as exc:
+        log.warning("Jobs étudiants HelloWork échoués : %s", exc)
+
+    try:
+        await _send_job_list(context.bot, chat_id, f"🎓 Jobs étudiants (HelloWork) — {display_ville}", jobs[:12])
+    except Exception as exc:
+        log.warning("Envoi job_list HelloWork échoué : %s", exc)
+
+    if not jobs:
+        try:
+            await context.bot.send_message(
+                chat_id,
+                f"⚠️ Aucune offre récente (< 14 jours) trouvée sur HelloWork pour <b>{html.escape(display_ville)}</b>.\n"
+                "💡 <i>Astuce : tu peux tester une autre ville (ex: <code>/jobhellowork Vierzon</code> ou <code>/jobhellowork Orléans</code>), "
+                "ou lancer <code>/job</code> pour chercher sur Indeed.</i>",
+                parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
+
+
 # ---------------------------------------------------------------------------
 # Boutons (✅ / ✏️ / ❌)
 # ---------------------------------------------------------------------------
@@ -1116,6 +1497,70 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if data == "noop":
         await _safe_answer_query(query)
         return
+
+    # Boutons de navigation du compteur & historique des candidatures
+    if data.startswith("all_apps:"):
+        await _safe_answer_query(query)
+        try:
+            page = int(data.split(":", 1)[1])
+        except ValueError:
+            page = 1
+        all_jobs = await asyncio.to_thread(bot_core.get_all_applied_jobs)
+        msg_text, reply_markup = _build_all_apps_page(all_jobs, page=page)
+        try:
+            await query.edit_message_text(msg_text, parse_mode=ParseMode.HTML, reply_markup=reply_markup, disable_web_page_preview=True)
+        except Exception:
+            import re as _re
+            plain = _re.sub(r'<[^>]+>', '', msg_text)
+            await query.edit_message_text(plain, reply_markup=reply_markup)
+        return
+
+    if data == "back_compteur":
+        await _safe_answer_query(query)
+        counts = await asyncio.to_thread(bot_core.get_application_counts)
+        msg_text, reply_markup = _build_compteur_message(counts)
+        try:
+            await query.edit_message_text(msg_text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+        except Exception:
+            import re as _re
+            plain = _re.sub(r'<[^>]+>', '', msg_text)
+            await query.edit_message_text(plain, reply_markup=reply_markup)
+        return
+
+    if data == "export_apps_txt":
+        await _safe_answer_query(query, "Export en cours…")
+        all_jobs = await asyncio.to_thread(bot_core.get_all_applied_jobs)
+        import zoneinfo
+        from datetime import datetime
+        paris_tz = zoneinfo.ZoneInfo("Europe/Paris")
+        now_str = datetime.now(paris_tz).strftime("%d/%m/%Y à %H:%M")
+        txt_lines = [
+            f"APPLYPILOT - HISTORIQUE COMPLET DES {len(all_jobs)} CANDIDATURES",
+            f"Généré le : {now_str} (Europe/Paris)",
+            "=" * 75,
+            ""
+        ]
+        for i, j in enumerate(all_jobs, 1):
+            dt_full = f"{j.get('date', '')} {j.get('time', '')}".strip() or "Date inconnue"
+            txt_lines.append(f"#{i:03d} | Date : {dt_full}")
+            txt_lines.append(f"     Entreprise : {j.get('company', '')}")
+            txt_lines.append(f"     Poste      : {j.get('title', '')}")
+            if j.get("url"):
+                txt_lines.append(f"     Lien offre : {j.get('url')}")
+            txt_lines.append("-" * 75)
+        file_bytes = "\n".join(txt_lines).encode("utf-8")
+        from io import BytesIO
+        bio = BytesIO(file_bytes)
+        bio.name = f"candidatures_applypilot_{datetime.now(paris_tz).strftime('%Y%m%d_%H%M')}.txt"
+        chat_id = query.message.chat_id if query.message else OWNER_ID
+        await context.bot.send_document(
+            chat_id=chat_id,
+            document=bio,
+            caption=f"📄 Voici l'export complet de tes <b>{len(all_jobs)}</b> candidatures envoyées !",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
     try:
         action, h = data.split(":", 1)
     except ValueError:
@@ -1136,11 +1581,23 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 chat_id, "⚠️ CV job étudiant introuvable (cv_job_etudiant.pdf). "
                          "Renvoie-le-moi et je le remets en place.")
             return
+
+        # Enregistrement immédiat pour l'extension Chrome et le traceur local
+        st_job = bot_core._load_student_jobs().get(url) or {}
+        st_title = st_job.get("title") or ""
+        st_emp = st_job.get("employer") or ""
+        bot_core.mark_student_job(url, title=st_title, employer=st_emp)
+        bot_core.set_last_prepared(url, cv_path=str(JOB_CV), job_type="student")
+        bot_core.set_cv_path(url, str(JOB_CV))
+        context.user_data["last_prepared_url"] = url
+        if query.message:
+            bot_core.set_card_message(url, query.message.message_id)
         # 1) Envoie le CV job étudiant (utile pour postuler depuis le téléphone).
         try:
+            from applypilot.cv_latex import cv_prefix
             with open(JOB_CV, "rb") as fh:
                 await context.bot.send_document(
-                    chat_id, InputFile(fh, filename="CV_Ali_Jamai_Job_Etudiant.pdf"),
+                    chat_id, InputFile(fh, filename=f"{cv_prefix()}_Job_Etudiant.pdf"),
                     caption="📄 Ton CV job étudiant.")
         except Exception:
             pass
@@ -1148,7 +1605,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         opened = False
         try:
             subprocess.Popen(
-                [sys.executable, "-m", "applypilot.autoapply", "--url", url,
+                [_get_python_exe(), "-m", "applypilot.autoapply", "--url", url,
                  "--cv", str(JOB_CV)], cwd=os.getcwd(),
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             opened = True
@@ -1198,13 +1655,14 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 query.message.chat_id, f"⚠️ Échec de la génération du CV : {exc}")
         link = row.get("application_url") or row.get("url") or ""
         bot_core.set_apply_status(url, "prepared")
-        bot_core.set_last_prepared(url)  # pour /done
+        bot_core.set_last_prepared(url, cv_path=str(pdf) if pdf else None, job_type="stage")  # pour /done
+        context.user_data["last_prepared_url"] = url
 
         # Ouvre le formulaire pré-rempli dans un navigateur VISIBLE sur le PC
         # (processus détaché : tu finis à la main — upload + clic Postuler).
         opened = False
         try:
-            cmd = [sys.executable, "-m", "applypilot.autoapply", "--url", url]
+            cmd = [_get_python_exe(), "-m", "applypilot.autoapply", "--url", url]
             if pdf:
                 cmd += ["--cv", str(pdf)]
             log_fh = (config.APP_DIR / "autoapply.log").open("a", encoding="utf-8")
@@ -1243,6 +1701,8 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if action == "ok":
         bot_core.set_apply_status(url, "applied")
+        bot_core.set_last_prepared(url)
+        context.user_data["last_prepared_url"] = url
         await _safe_answer_query(query, "✅ Marquée postulée")
         try:
             await query.message.delete()  # retire la carte du fil
@@ -1260,6 +1720,8 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     elif action == "edit":
         # Telegram n'a pas de modal : on attend le prochain message texte.
         context.user_data["awaiting_edit_for"] = url
+        context.user_data["last_prepared_url"] = url
+        bot_core.set_last_prepared(url)
         await _safe_answer_query(query)
         await context.bot.send_message(
             query.message.chat_id,
@@ -1267,32 +1729,94 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "(ex. « insister sur l'Active Directory, retirer tel projet »).")
 
 
+async def _handle_add_experience(update: Update, context: ContextTypes.DEFAULT_TYPE, raw_text: str) -> None:
+    wait_msg = await update.message.reply_text(
+        "⏳ <i>Analyse, rédaction ATS et enregistrement de ton projet en cours…</i>",
+        parse_mode=ParseMode.HTML,
+    )
+    try:
+        from applypilot import experiences_manager
+        exp, path = await asyncio.to_thread(experiences_manager.add_experience, raw_text)
+
+        bullets_str = "\n".join(f"  • {b.replace('**', '')}" for b in exp.get("bullets", []))
+        tech_str = ", ".join(exp.get("tech", []))
+        tags_str = " · ".join(f"#{t}" for t in exp.get("tags", []))
+
+        reply = (
+            "✅ <b>Nouveau projet ajouté à ton profil !</b>\n\n"
+            f"📌 <b>Titre :</b> {exp.get('title')}\n"
+            f"👤 <b>Rôle :</b> {exp.get('role')} (<i>{exp.get('org')}</i>)\n"
+            f"🗓️ <b>Dates :</b> {exp.get('dates')}\n"
+            f"🎯 <b>Contexte :</b> {exp.get('context')}\n\n"
+            f"⚡ <b>Réalisations clés (format ATS) :</b>\n{bullets_str}\n\n"
+            f"🛠️ <b>Technologies :</b> {tech_str}\n"
+            f"🏷️ <b>Tags :</b> {tags_str}\n\n"
+            f"💾 <i>Enregistré dans : <code>{path.name}</code></i>\n\n"
+            "🚀 <i>Ce projet sera automatiquement pris en compte et mis en valeur pour tes prochains CV adaptés !</i>"
+        )
+        await wait_msg.edit_text(reply, parse_mode=ParseMode.HTML)
+    except Exception as exc:
+        log.exception("Échec ajout expérience : %s", exc)
+        await wait_msg.edit_text(f"⚠️ Erreur lors de l'enregistrement du projet : {exc}")
+
+
+async def experience_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Ajoute un nouveau projet ou une expérience dans experiences.json."""
+    if not _authorized(update):
+        return await _deny(update)
+
+    args = context.args or []
+    if args:
+        raw_text = " ".join(args).strip()
+        await _handle_add_experience(update, context, raw_text)
+    else:
+        context.user_data["awaiting_experience"] = True
+        await update.message.reply_text(
+            "📝 <b>Ajouter un nouveau projet à ton profil</b>\n\n"
+            "Envoie-moi simplement la description de ton projet en répondant à ce message (texte libre, notes, bullet points ou résumé technique).\n\n"
+            "💡 <i>Exemples :</i>\n"
+            "• <code>/experience Lab SIEM Wazuh : déploiement cluster Docker, ingestion Sysmon & auditd, création de règles de détection Brute-Force SSH</code>\n"
+            "• Ou réponds simplement avec le texte de ton projet !\n\n"
+            "Je vais structurer automatiquement le projet (titre ATS, puces d'action au passé composé, technos, tags) et l'enregistrer dans <code>experiences.json</code>.",
+            parse_mode=ParseMode.HTML,
+        )
+
+
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Capture la consigne de modification saisie après le bouton ✏️."""
     if not _authorized(update):
         return
     url = context.user_data.pop("awaiting_edit_for", None)
-    if not url:
-        return  # texte libre hors contexte : on ignore.
-    note = (update.message.text or "").strip()[:500]
-    bot_core.set_apply_status(url, "edit_requested", note=note)
-    await update.message.reply_text(
-        f"✏️ Noté : « {note} »\n"
-        "⏳ Régénération immédiate de ton CV adapté avec cette consigne… (~10 s)")
+    if url:
+        note = (update.message.text or "").strip()[:500]
+        bot_core.set_apply_status(url, "edit_requested", note=note)
+        await update.message.reply_text(
+            f"✏️ Noté : « {note} »\n"
+            "⏳ Régénération immédiate de ton CV adapté avec cette consigne… (~10 s)")
 
-    row = bot_core.fetch_one(url) or {}
-    row["user_note"] = note
-    try:
-        from applypilot import cv_latex
-        pdf = await asyncio.to_thread(cv_latex.generate_cv, row)
-        bot_core.set_cv_path(url, str(pdf))
-        with open(pdf, "rb") as fh:
-            await context.bot.send_document(
-                update.message.chat_id, InputFile(fh, filename=pdf.name),
-                caption="📄 Ton CV adapté mis à jour avec ta consigne (1 page).")
-    except Exception as exc:
-        log.exception("Régénération immédiate CV échouée : %s", exc)
-        await update.message.reply_text(f"⚠️ Échec de la régénération du CV : {exc}")
+        row = bot_core.fetch_one(url) or {}
+        row["user_note"] = note
+        try:
+            from applypilot import cv_latex
+            pdf = await asyncio.to_thread(cv_latex.generate_cv, row)
+            bot_core.set_cv_path(url, str(pdf))
+            with open(pdf, "rb") as fh:
+                await context.bot.send_document(
+                    update.message.chat_id, InputFile(fh, filename=pdf.name),
+                    caption="📄 Ton CV adapté mis à jour avec ta consigne (1 page).")
+        except Exception as exc:
+            log.exception("Régénération immédiate CV échouée : %s", exc)
+            await update.message.reply_text(f"⚠️ Échec de la régénération du CV : {exc}")
+        return
+
+    if context.user_data.pop("awaiting_experience", False):
+        raw_text = (update.message.text or "").strip()
+        if not raw_text:
+            await update.message.reply_text("⚠️ Texte vide reçu.")
+            return
+        await _handle_add_experience(update, context, raw_text)
+        return
+
 
 
 # ---------------------------------------------------------------------------
@@ -1371,6 +1895,11 @@ async def _post_shutdown(app: Application) -> None:
     await tracer.stop_tracer_server()
 
 
+
+async def _global_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    log.warning("Exception interceptée par le gestionnaire d'erreurs Telegram : %s", context.error)
+
+
 def build_application() -> Application:
     app = (
         Application.builder()
@@ -1390,6 +1919,8 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("help", commandes_cmd))
     app.add_handler(CommandHandler("aide", commandes_cmd))
     app.add_handler(CommandHandler("scan", scan_cmd))
+    app.add_handler(CommandHandler("hellowork", hellowork_cmd))
+    app.add_handler(CommandHandler("hw", hellowork_cmd))
     app.add_handler(CommandHandler("search", search_cmd))
     app.add_handler(CommandHandler("offres", offres_cmd))
     app.add_handler(CommandHandler("offre", offres_cmd))
@@ -1399,6 +1930,20 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("clean", clean_cmd))
     app.add_handler(CommandHandler("job", job_cmd))
     app.add_handler(CommandHandler("jobs", job_cmd))
+    app.add_handler(CommandHandler("jobdistant", jobdistant_cmd))
+    app.add_handler(CommandHandler("jobdistants", jobdistant_cmd))
+    app.add_handler(CommandHandler("jobsdistants", jobdistant_cmd))
+    app.add_handler(CommandHandler("job_distant", jobdistant_cmd))
+    app.add_handler(CommandHandler("jobs_distants", jobdistant_cmd))
+    app.add_handler(CommandHandler("teletravail", jobdistant_cmd))
+    app.add_handler(CommandHandler("distant", jobdistant_cmd))
+    app.add_handler(CommandHandler("jobhellowork", jobhellowork_cmd))
+    app.add_handler(CommandHandler("jobshellowork", jobhellowork_cmd))
+    app.add_handler(CommandHandler("job_hellowork", jobhellowork_cmd))
+    app.add_handler(CommandHandler("jobs_hellowork", jobhellowork_cmd))
+    app.add_handler(CommandHandler("helloworkjob", jobhellowork_cmd))
+    app.add_handler(CommandHandler("helloworkjobs", jobhellowork_cmd))
+    app.add_handler(CommandHandler("hwjob", jobhellowork_cmd))
     app.add_handler(CommandHandler("trackers", trackers_cmd))
     app.add_handler(CommandHandler("tracker", trackers_cmd))
     app.add_handler(CommandHandler("track", track_cmd))
@@ -1406,6 +1951,19 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("confirmee", confirmee_cmd))
     app.add_handler(CommandHandler("refus", refus_cmd))
     app.add_handler(CommandHandler("done", done_cmd))
+    app.add_handler(CommandHandler("compteur", compteur_cmd))
+    app.add_handler(CommandHandler("compteurs", compteur_cmd))
+    app.add_handler(CommandHandler("compte", compteur_cmd))
+    app.add_handler(CommandHandler("candidatures", compteur_cmd))
+    app.add_handler(CommandHandler("postulees", compteur_cmd))
+    app.add_handler(CommandHandler("toutes", toutes_cmd))
+    app.add_handler(CommandHandler("tous", toutes_cmd))
+    app.add_handler(CommandHandler("historique", toutes_cmd))
+    app.add_handler(CommandHandler("liste", toutes_cmd))
+    app.add_handler(CommandHandler("experience", experience_cmd))
+    app.add_handler(CommandHandler("experiences", experience_cmd))
+    app.add_handler(CommandHandler("projet", experience_cmd))
+    app.add_handler(CommandHandler("projets", experience_cmd))
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     if app.job_queue is not None:
@@ -1413,6 +1971,7 @@ def build_application() -> Application:
         # score, et envoie les nouvelles bonnes offres.
         app.job_queue.run_repeating(_auto_cycle, interval=CYCLE_MINUTES * 60,
                                     first=30)
+    app.add_error_handler(_global_error_handler)
     return app
 
 
@@ -1428,9 +1987,24 @@ def main() -> None:
         raise SystemExit(
             "TELEGRAM_USER_ID manquant dans ~/.applypilot/.env "
             "(demande ton ID à @userinfobot sur Telegram).")
-    app = build_application()
-    log.info("ApplyPilot Telegram — démarrage (owner=%s)", OWNER_ID)
-    app.run_polling(allowed_updates=Update.ALL_TYPES, bootstrap_retries=-1)
+    import time
+    import httpx
+    import telegram
+
+    while True:
+        try:
+            app = build_application()
+            log.info("ApplyPilot Telegram — démarrage (owner=%s)", OWNER_ID)
+            app.run_polling(allowed_updates=Update.ALL_TYPES, bootstrap_retries=-1)
+            break
+        except (telegram.error.NetworkError, httpx.HTTPError, OSError) as exc:
+            log.warning("Interruption réseau du bot (%s). Redémarrage automatique dans 5s...", exc)
+            time.sleep(5)
+        except (KeyboardInterrupt, SystemExit):
+            break
+        except Exception as exc:
+            log.error("Arrêt inattendu du bot : %s. Redémarrage dans 5s...", exc, exc_info=True)
+            time.sleep(5)
 
 
 if __name__ == "__main__":

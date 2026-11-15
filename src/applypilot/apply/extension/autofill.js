@@ -5,7 +5,7 @@
   if (window.__applypilot_injected) return;
   window.__applypilot_injected = true;
 
-  const API_BASE = 'http://localhost:8765';
+  const API_BASE = 'http://127.0.0.1:8765';
 
   // -------------------------------------------------------------------------
   // Détection des pages d'offres et formulaires
@@ -22,7 +22,7 @@
     if (commonPatterns.some(p => url.includes(p))) return true;
 
     // Détection par la présence de champs d'un formulaire de candidature
-    const hasInputs = document.querySelectorAll('input:not([type="hidden"]), textarea, select').length >= 3;
+    const hasInputs = deepQueryAll('input:not([type="hidden"]), textarea, select').length >= 3;
     const hasApplyKeywords = /candidater|postuler|apply|submit|curriculum|téléverser|déposer mon cv/i.test(document.body.innerText || '');
     return hasInputs && hasApplyKeywords;
   }
@@ -59,13 +59,15 @@
       }
 
       // Simulation d'une frappe humaine pour React, Vue 2/3, Angular
+      // composed: true — l'événement doit sortir du shadow root pour que le
+      // composant (SmartRecruiters…) enregistre la valeur.
       try {
-        el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, inputType: 'insertText', data: val }));
+        el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, composed: true, inputType: 'insertText', data: val }));
       } catch (_e) {
-        el.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+        el.dispatchEvent(new Event('input', { bubbles: true, cancelable: true, composed: true }));
       }
-      el.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
-      el.dispatchEvent(new Event('blur', { bubbles: true, cancelable: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true, cancelable: true, composed: true }));
+      el.dispatchEvent(new FocusEvent('blur', { bubbles: true, cancelable: true, composed: true }));
 
       // Surlignage vert discret
       highlightField(el);
@@ -74,6 +76,91 @@
       console.warn('[ApplyPilot] Erreur écriture champ:', e);
       return false;
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // Formulaires en Web Components (SmartRecruiters, Workday récent…) : les champs
+  // vivent dans des « shadow roots » que document.querySelectorAll ne traverse pas.
+  // -------------------------------------------------------------------------
+  function deepQueryAll(selector, root = document, out = []) {
+    try {
+      root.querySelectorAll(selector).forEach(el => out.push(el));
+      root.querySelectorAll('*').forEach(el => {
+        if (el.shadowRoot) deepQueryAll(selector, el.shadowRoot, out);
+      });
+    } catch (_e) {}
+    return out;
+  }
+
+  // Parent dans l'arbre « composé » : traverse les frontières de shadow root.
+  function composedParent(node) {
+    if (!node) return null;
+    if (node.assignedSlot) return node.assignedSlot;
+    if (node.parentElement) return node.parentElement;
+    const root = node.getRootNode && node.getRootNode();
+    return root && root.host ? root.host : null;
+  }
+
+  function cleanQuestion(text) {
+    return String(text || '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ')
+      .replace(/\s*\*\s*$/, '').replace(/\b\d+\s*\/\s*\d+\s*$/, '').trim();
+  }
+
+  // Texte de la question posée au-dessus d'un champ libre, sans le bruit des
+  // champs voisins. Renvoie '' si rien ne ressemble à un libellé.
+  function getQuestionText(el) {
+    // Le libellé LE PLUS PROCHE du champ fait foi : on s'arrête au premier niveau
+    // qui en fournit un, pour ne pas attribuer à « Nom » la question d'un bloc voisin.
+    // placeholder / title sont des indices faibles : on continue à chercher mieux.
+    const candidates = [];
+    const weak = [];
+    const add = (list, t) => {
+      const c = cleanQuestion(t);
+      if (c.length > 2 && c.length < 400 && !list.includes(c)) list.push(c);
+    };
+    const push = (t) => add(candidates, t);
+    let node = el;
+    for (let depth = 0; depth < 10 && node && node !== document.body; depth++) {
+      if (node.getAttribute) {
+        ['aria-label', 'label'].forEach(a => push(node.getAttribute(a)));
+        ['placeholder', 'title'].forEach(a => add(weak, node.getAttribute(a)));
+        const ids = ((node.getAttribute('aria-labelledby') || '') + ' ' + (node.id ? '' : '')).trim();
+        const root = node.getRootNode ? node.getRootNode() : document;
+        ids.split(/\s+/).filter(Boolean).forEach(id => {
+          const t = root.getElementById ? root.getElementById(id) : document.getElementById(id);
+          if (t) push(t.innerText || t.textContent);
+        });
+        if (node.id) {
+          try {
+            const l = root.querySelector(`label[for="${CSS.escape(node.id)}"]`);
+            if (l) push(l.innerText || l.textContent);
+          } catch (_e) {}
+        }
+      }
+      if (node.tagName === 'LABEL') push(node.innerText || node.textContent);
+      // Frères précédents : le libellé est en général juste avant le champ.
+      let prev = node.previousElementSibling;
+      for (let i = 0; i < 3 && prev; i++, prev = prev.previousElementSibling) {
+        if (!prev.querySelector || !prev.querySelector('input, textarea, select')) {
+          push(prev.innerText || prev.textContent);
+        }
+      }
+      if (candidates.length) break;
+      node = composedParent(node);
+    }
+    return candidates.find(c => c.includes('?')) || candidates[0] || weak[0] || '';
+  }
+
+  // Vrai si le champ répond à une QUESTION (« … ? ») : il est alors traité en
+  // dernière passe, par la banque de réponses puis le LLM, avec le libellé propre.
+  function isQuestionField(el) {
+    return getQuestionText(el).includes('?');
+  }
+
+  function isVisibleField(el) {
+    if (!el || el.disabled || el.readOnly) return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 20 && r.height > 8;
   }
 
   function highlightField(el) {
@@ -173,7 +260,25 @@
       if (parentTxt && parentTxt.length < 250) parts.push(parentTxt);
     }
 
-    if (el.name) parts.push(el.name);
+    ['name', 'id', 'data-test', 'data-testid', 'placeholder', 'autocomplete', 'title', 'aria-label'].forEach(attr => {
+      const v = el.getAttribute && el.getAttribute(attr);
+      if (v) parts.push(v);
+    });
+
+    // Champ dans un shadow root (SmartRecruiters…) : les recherches ci-dessus
+    // s'arrêtent à la frontière du composant. On ajoute le libellé trouvé en la
+    // traversant, placé en tête pour qu'il prime sur les textes voisins.
+    const root = el.getRootNode ? el.getRootNode() : null;
+    if (root && root !== document) {
+      const shadowLabel = getQuestionText(el);
+      if (shadowLabel) parts.unshift(shadowLabel);
+      if (root.host) {
+        ['label', 'name', 'id', 'data-test', 'data-testid', 'placeholder', 'aria-label'].forEach(attr => {
+          const v = root.host.getAttribute && root.host.getAttribute(attr);
+          if (v) parts.push(v);
+        });
+      }
+    }
 
     return parts.join(' ').toLowerCase().replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
   }
@@ -280,13 +385,14 @@
     return null;
   }
 
-  async function apiSmartAnswer(question, jobTitle) {
+  async function apiSmartAnswer(question, jobTitle, maxLength) {
+    // Une réponse rédigée par le LLM peut prendre une dizaine de secondes.
     if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
       try {
         const resp = await new Promise((resolve) => {
-          const timer = setTimeout(() => resolve(null), 3000);
+          const timer = setTimeout(() => resolve(null), 30000);
           try {
-            chrome.runtime.sendMessage({ action: 'smart_answer', question, job_title: jobTitle }, (res) => {
+            chrome.runtime.sendMessage({ action: 'smart_answer', question, job_title: jobTitle, max_length: maxLength || 0, page_url: location.href }, (res) => {
               clearTimeout(timer);
               if (chrome.runtime.lastError) resolve(null);
               else resolve(res);
@@ -302,8 +408,8 @@
     const ansResp = await fetch(`${API_BASE}/api/smart-answer`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question, job_title: jobTitle }),
-      signal: AbortSignal.timeout(6000)
+      body: JSON.stringify({ question, job_title: jobTitle, max_length: maxLength || 0, page_url: location.href }),
+      signal: AbortSignal.timeout(30000)
     });
     return await ansResp.json();
   }
@@ -316,7 +422,18 @@
 
     let data = preloadData;
 
-    // Si pas de données en direct, chercher dans chrome.storage.local
+    // 1. Toujours tenter de récupérer les données fraîches depuis le backend local pour l'URL actuelle
+    // (garantit le bon choix entre CV étudiant et CV cybersécurité, même si le cache local contenait un autre profil)
+    try {
+      const freshData = await apiGetCandidate(location.href);
+      if (freshData) {
+        data = freshData;
+      }
+    } catch (_e) {
+      // Backend temporairement inaccessible ou offline
+    }
+
+    // 2. Fallback si l'appel en direct a échoué : utiliser preloadData ou le cache chrome.storage.local
     if (!data && typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
       try {
         const stored = await new Promise((resolve) => {
@@ -330,15 +447,10 @@
       } catch (_e) {}
     }
 
-    // Si toujours pas de données, interroger l'API locale ApplyPilot
     if (!data) {
-      try {
-        data = await apiGetCandidate(location.href);
-      } catch (err) {
-        console.error('[ApplyPilot] Impossible de joindre ApplyPilot local:', err);
-        setPillState('error', '⚠️ Lance le bot ApplyPilot (port 8765)');
-        return;
-      }
+      console.error('[ApplyPilot] Impossible de joindre ApplyPilot local');
+      setPillState('error', '⚠️ Lance le bot ApplyPilot (port 8765)');
+      return;
     }
 
     const pers = data.personal || {};
@@ -347,19 +459,25 @@
     let cvAttached = false;
 
     // 1. Text Inputs (Champs personnels + Questions ouvertes en phrases complètes)
-    const inputs = document.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"]):not([type="file"])');
+    const inputs = deepQueryAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"]):not([type="file"])');
     for (const input of inputs) {
       if (input.value && input.value.trim().length > 0) continue; // Ne pas écraser
       const label = getFieldLabel(input);
+      const isStandardPersonalInfo = /pr[ée]nom|first[\s_-]*name|nom(?![\s_-]*utilisateur)|last[\s_-]*name|e[\s_-]?mail|courriel|phone|t[ée]l[ée]phone|mobile|adresse|address|city|ville|postal|code[\s_-]*postal|linkedin|github|portfolio/i.test(label);
+      if (!isStandardPersonalInfo && isQuestionField(input)) continue; // question libre : passe 6
       const type = (input.type || '').toLowerCase();
       const placeholder = (input.getAttribute('placeholder') || '').toLowerCase();
 
+      // Confirmation Email
+      if (/confirm.*e[\s_-]?mail|confirm.*courriel|r[ée]p[ée]t.*e[\s_-]?mail/i.test(label) || /confirm.*email/i.test(input.name || '') || /confirm.*email/i.test(input.id || '') || (input.getAttribute('data-test') || '').includes('confirm-email')) {
+        if (setNativeValue(input, pers.email)) filledCount++;
+      }
       // Prénom
-      if (/first[\s_-]*name|pr[ée]nom|given[\s_-]*name/i.test(label)) {
+      else if (/first[\s_-]*name|pr[ée]nom|given[\s_-]*name/i.test(label) || /first[\s_-]*name/i.test(input.name || '') || input.autocomplete === 'given-name' || (input.getAttribute('data-test') || '').includes('first-name')) {
         if (setNativeValue(input, pers.first_name)) filledCount++;
       }
       // Nom
-      else if (/last[\s_-]*name|nom(?![\s_-]*(utilisateur|user|complet|de[\s_-]*jeune))|family[\s_-]*name|surname/i.test(label)) {
+      else if (/last[\s_-]*name|nom(?![\s_-]*(utilisateur|user|complet|de[\s_-]*jeune))|family[\s_-]*name|surname/i.test(label) || /last[\s_-]*name/i.test(input.name || '') || input.autocomplete === 'family-name' || (input.getAttribute('data-test') || '').includes('last-name')) {
         if (setNativeValue(input, pers.last_name)) filledCount++;
       }
       // Nom complet
@@ -404,7 +522,7 @@
       }
       // Établissement / École / Université
       else if (/quel[\s_-]*[ée]tablissement|[ée]tablissement.*inscrit|inscrit.*[ée]tablissement|\b[ée]tablissement\b|\b[ée]cole\b|\bschool\b|\binstitution\b|\buniversit[ée]\b/i.test(label)) {
-        const schoolVal = (data.education && data.education.school) || qa.etablissement || 'INSA Centre Val de Loire';
+        const schoolVal = (data.education && data.education.school) || qa.etablissement || '';
         if (setNativeValue(input, schoolVal)) filledCount++;
       }
       // Date de début / À partir de quand disponible (phrase complète si champ texte)
@@ -425,12 +543,12 @@
       }
       // Convention de stage (si champ texte)
       else if (/convention.*stage|disposerez.*convention|b[ée]n[ée]ficierez.*convention/i.test(label)) {
-        const val = qa.convention_stage || "Oui, je disposerai d'une convention de stage délivrée par mon école (l'INSA Centre Val de Loire) pour toute la durée du stage.";
+        const val = qa.convention_stage || (schoolVal ? `Oui, je disposerai d'une convention de stage délivrée par mon école (${schoolVal}) pour toute la durée du stage.` : "Oui, je disposerai d'une convention de stage délivrée par mon établissement pour toute la durée du stage.");
         if (setNativeValue(input, val)) filledCount++;
       }
       // Type de stage (si champ texte)
       else if (/type.*stage|nature.*stage|kind.*internship/i.test(label)) {
-        const val = qa.type_stage || "Stage élève-ingénieur (Fin de Master 1 / Césure 1ère partie - Bac+4/5 à l'INSA Centre Val de Loire).";
+        const val = qa.type_stage || "Stage conventionné";
         if (setNativeValue(input, val)) filledCount++;
       }
       // Durée du stage
@@ -474,7 +592,7 @@
       }
       // Niveau d'études
       else if (/niveau[\s_-]*(d['\s]*)?[ée]tudes?|education[\s_-]*level/i.test(label)) {
-        if (setNativeValue(input, qa.niveau_etudes || "Bac+4 (Élève-ingénieur à l'INSA Centre Val de Loire)")) filledCount++;
+        if (setNativeValue(input, qa.niveau_etudes || (schoolVal ? `Étudiant à ${schoolVal}` : "Étudiant"))) filledCount++;
       }
       // Langues / Anglais
       else if (/anglais|english|langue|toeic/i.test(label)) {
@@ -518,7 +636,7 @@
       return true;
     }
 
-    const selects = document.querySelectorAll('select');
+    const selects = deepQueryAll('select');
     for (const sel of selects) {
       if (sel.selectedIndex > 0 && sel.value && sel.value !== '0' && sel.value !== '-1') continue;
       const label = getFieldLabel(sel);
@@ -647,7 +765,7 @@
 
     // 3. Traitement des choix (Radios, Checkboxes, Chips Taleo / Alta UI, Boutons de choix)
     const choiceSelectors = 'button, [role="radio"], [role="button"], label, .chip, .badge, .btn, span[class*="chip" i], div[class*="chip" i], input[type="radio"], input[type="checkbox"]';
-    const choiceCandidates = Array.from(document.querySelectorAll(choiceSelectors));
+    const choiceCandidates = deepQueryAll(choiceSelectors);
     const handledGroups = new Set();
 
     for (const el of choiceCandidates) {
@@ -761,17 +879,18 @@
     // 4. Upload automatique du CV PDF (Support natif ATS : SAP SuccessFactors, Workday, Taleo, etc.)
     if (data.has_cv) {
       async function prepareCvFile() {
-        const fileName = preloadCvName || data.cv_name || 'CV_Ali_Jamai.pdf';
-        if (preloadCvBase64) {
-          console.log('[ApplyPilot] Conversion directe du CV préchargé en mémoire');
+        const targetFileName = (data && data.cv_name) || preloadCvName || 'CV.pdf';
+        // N'utiliser le CV préchargé en mémoire QUE si son nom correspond au CV ciblé pour cette offre
+        if (preloadCvBase64 && preloadCvName && preloadCvName === targetFileName) {
+          console.log('[ApplyPilot] Conversion directe du CV préchargé en mémoire:', preloadCvName);
           try {
             const binaryStr = atob(preloadCvBase64);
             const bytes = new Uint8Array(binaryStr.length);
             for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
-            return new File([bytes], fileName, { type: 'application/pdf', lastModified: Date.now() });
+            return new File([bytes], targetFileName, { type: 'application/pdf', lastModified: Date.now() });
           } catch (_e) {}
         }
-        return await apiGetCvFile(location.href, fileName);
+        return await apiGetCvFile(location.href, targetFileName);
       }
 
       try {
@@ -799,8 +918,11 @@
                 if (desc && desc.set) desc.set.call(inputEl, dt.files);
               } catch (_e) {}
 
-              inputEl.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
-              inputEl.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+              inputEl.dispatchEvent(new Event('input', { bubbles: true, cancelable: true, composed: true }));
+              inputEl.dispatchEvent(new Event('change', { bubbles: true, cancelable: true, composed: true }));
+              try {
+                inputEl.dispatchEvent(new Event('blur', { bubbles: true, composed: true }));
+              } catch (_e) {}
 
               highlightField(dropTarget || inputEl);
               return true;
@@ -824,9 +946,9 @@
 
             console.log('[ApplyPilot] Formulaire SAP SuccessFactors détecté, injection directe du CV');
 
-            const fileName = preloadCvName || data.cv_name || 'CV_Ali_Jamai.pdf';
+            const fileName = (data && data.cv_name) || preloadCvName || 'CV.pdf';
 
-            let base64 = preloadCvBase64;
+            let base64 = (preloadCvName === fileName) ? preloadCvBase64 : null;
 
             if (!base64) {
 
@@ -969,7 +1091,7 @@
 
 
           // Étape 1 : Recherche d'un <input type="file"> déjà présent (Indeed, WTTJ, Lever, etc.)
-          let fileInputs = Array.from(document.querySelectorAll('input[type="file"]'));
+          let fileInputs = deepQueryAll('input[type="file"]');
           document.querySelectorAll('*').forEach(el => {
             if (el.shadowRoot) {
               el.shadowRoot.querySelectorAll('input[type="file"]').forEach(sf => fileInputs.push(sf));
@@ -1058,7 +1180,7 @@
 
           // Étape 3 : Repli HTML5 Drag & Drop sur les dropzones
           if (!cvAttached) {
-            const dropzones = Array.from(document.querySelectorAll('.attachWrapper, .attachmentField, [class*="dropzone"], [class*="upload"], [id*="attach"]'));
+            const dropzones = Array.from(document.querySelectorAll('.attachWrapper, .attachmentField, [class*="dropzone"], [class*="upload"], [id*="attach"], [data-test="resume-upload"], [data-test*="upload"], [data-test*="resume"], spl-file-upload, spl-dropzone'));
             for (const dz of dropzones) {
               try {
                 dz.dispatchEvent(new DragEvent('dragenter', { bubbles: true, cancelable: true, dataTransfer: dt }));
@@ -1077,10 +1199,11 @@
     }
 
     // 5. Textareas (Banque Q&A + Génération IA des questions ouvertes en phrases complètes)
-    const textareas = document.querySelectorAll('textarea');
+    const textareas = deepQueryAll('textarea');
     let aiCount = 0;
     for (const ta of textareas) {
       if (ta.value && ta.value.trim().length > 0) continue;
+      if (isQuestionField(ta)) continue; // question libre : passe 6
       const label = getFieldLabel(ta);
 
       // Correspondances Banque Q&A directe dans un textarea
@@ -1091,7 +1214,7 @@
       } else if (/jusqu['\s]*[àa]\s*quand.*disponible|d[ée]marrage/i.test(label)) {
         if (setNativeValue(ta, qa.date_fin_demarrage_stage || "Je suis disponible pour le démarrage de mon stage jusqu'en septembre 2027 au plus tard.")) filledCount++;
       } else if (/convention.*stage|disposerez.*convention/i.test(label)) {
-        if (setNativeValue(ta, qa.convention_stage || "Oui, je disposerai d'une convention de stage délivrée par mon école (l'INSA Centre Val de Loire) pour toute la durée du stage.")) filledCount++;
+        if (setNativeValue(ta, qa.convention_stage || "Oui, je disposerai d'une convention de stage délivrée par mon établissement pour toute la durée du stage.")) filledCount++;
       } else if (/mobilit[ée]|d[ée]placement/i.test(label)) {
         if (setNativeValue(ta, qa.mobilite_geographique || "Je suis totalement mobile sur l'ensemble de la France, avec une préférence pour l'Île-de-France et la région Centre-Val de Loire.")) filledCount++;
       } else if (/anglais|langue|english/i.test(label)) {
@@ -1110,6 +1233,35 @@
         } catch (e) {
           console.warn('[ApplyPilot] Échec smart-answer:', e);
         }
+      }
+    }
+
+    // 6. Questions libres restées vides — champs d'une ligne comme zones de texte,
+    // y compris dans les shadow roots (SmartRecruiters : « Questions préliminaires »).
+    // Tout champ encore vide dont le libellé est une question part au LLM, qui
+    // répond à partir de la banque de réponses puis des faits réels du candidat.
+    const freeFields = deepQueryAll(
+      'textarea, input[type="text"], input:not([type])'
+    ).filter(el => isVisibleField(el) && !(el.value && el.value.trim().length > 0));
+    for (const field of freeFields) {
+      if (field.value && field.value.trim().length > 0) continue;
+      const question = getQuestionText(field);
+      const isTextarea = field.tagName === 'TEXTAREA';
+      // Un champ d'une ligne n'est traité que si son libellé est une vraie question :
+      // on ne veut pas rédiger une phrase dans un champ « Ville » resté vide.
+      if (!question || (!question.includes('?') && !(isTextarea && question.length > 12))) continue;
+      try {
+        setPillState('loading', '🤖 Rédaction IA...');
+        const maxLength = field.maxLength > 0 ? field.maxLength : (isTextarea ? 1200 : 200);
+        const ansData = await apiSmartAnswer(question, document.title, maxLength);
+        if (ansData && ansData.answer) {
+          if (setNativeValue(field, String(ansData.answer).slice(0, maxLength))) {
+            filledCount++;
+            if (ansData.source === 'ai') aiCount++;
+          }
+        }
+      } catch (e) {
+        console.warn('[ApplyPilot] Échec question libre:', question, e);
       }
     }
 

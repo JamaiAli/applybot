@@ -385,3 +385,198 @@ def sort_offers(offers: list[dict], sort: str = "date", max_age_days: int | None
             )
         )
     return sorted(offers, key=_date_sort_key)
+
+
+# --------------------------------------------------------------------------- #
+# Recherche de jobs et missions à distance / 100% télétravail (France entière)
+# --------------------------------------------------------------------------- #
+DEFAULT_REMOTE_STUDENT_QUERIES: list[tuple[str, str | None]] = [
+    ("étudiant", "remote"),
+    ("job étudiant télétravail", None),
+    ("soutien scolaire en ligne", None),
+    ("téléconseiller étudiant", None),
+    ("opérateur saisie télétravail", None),
+    ("tuteur en ligne", None),
+]
+
+DEFAULT_REMOTE_INTERIM_QUERIES: list[tuple[str, str | None]] = [
+    ("intérim", "remote"),
+    ("intérim télétravail", None),
+    ("téléopérateur intérim", None),
+    ("téléconseiller télétravail", None),
+    ("saisie données télétravail", None),
+    ("assistant administratif télétravail", None),
+]
+
+REMOTE_EXPLICIT_RE = re.compile(
+    r"(t[ée]l[ée]travail|100\s*%\s*t[ée]l[ée]travail|distanciel|100\s*%\s*distanciel|full\s*remote|100\s*%\s*remote|"
+    r"travail\s+[àa]\s+distance|poste\s+[àa]\s+distance|mission\s+[àa]\s+distance|100\s*%\s*[àa]\s+distance|"
+    r"[àa]\s+distance|de\s+chez\s+vous|[àa]\s+domicile|\ben\s+ligne\b)",
+    re.IGNORECASE,
+)
+
+ON_SITE_TITLES_RE = re.compile(
+    r"\b(cuisine|commis|serveur|serveuse|plongeur|cuisinier|manutention|chauffeur|livreur|cariste|"
+    r"pr[ée]parateur\s+de\s+commandes?|agent\s+d['\s]entretien|agent\s+de\s+s[ée]curit[ée]|ouvrier|"
+    r"ma[çc]on|[ée]lectricien|m[ée]canicien|magasinier|h[ôo]te.*caisse|caissier|mise\s+en\s+rayon|"
+    r"boulanger|boucher|poissonnier|carreleur|peintre|plombier|tourneur|soudeur|couture)\b",
+    re.IGNORECASE,
+)
+
+
+def is_truly_remote_job(j: dict) -> bool:
+    """Vérifie si une offre Indeed est réellement faisable en télétravail / à distance
+    depuis n'importe où en France métropolitaine."""
+    title = str(j.get("title") or "")
+    if EXCLU_TITRE_RE.search(_indeed.norm(title)) or ON_SITE_TITLES_RE.search(title):
+        return False
+
+    loc = j.get("location") or {}
+    loc_name = (loc.get("display_name") if isinstance(loc, dict) else str(loc or "")).lower()
+    state = (loc.get("state") or "").lower() if isinstance(loc, dict) else ""
+
+    # Écarter DOM-TOM si ce n'est pas explicitement du télétravail pur
+    if "dom-tom" in state or any(d in loc_name for d in ("guadeloupe", "martinique", "reunion", "mayotte", "guyane")):
+        if not any(k in loc_name for k in ("télétravail", "teletravail", "remote", "distanciel")):
+            return False
+
+    # 1. Si Indeed indique explicitement Télétravail / Remote dans le lieu
+    if any(k in loc_name for k in ("télétravail", "teletravail", "remote", "distanciel", "a distance", "à distance")):
+        return True
+
+    # 2. Si le titre indique du télétravail / à distance / en ligne
+    if REMOTE_EXPLICIT_RE.search(title):
+        return True
+
+    # 3. Si work_setting == 'remote' sur Indeed ET que la description confirme le télétravail
+    ws = str(j.get("work_setting") or "").lower()
+    desc = str(j.get("description") or "")[:2000]
+    if ws == "remote" and REMOTE_EXPLICIT_RE.search(desc):
+        return True
+
+    return False
+
+
+def search_remote_student_jobs(limit: int = 10, max_age_days: int = 14) -> list[dict]:
+    """Recherche live de jobs étudiants à distance / 100% télétravail dans toute la France sur Indeed.
+    Écarte stages, alternances, et postes sur site."""
+    cfg = _student_config()
+    if not cfg.get("enabled", True):
+        return []
+
+    try:
+        jobs_mod = _indeed._import_jobs(_indeed._load_indeed_config())
+    except Exception as e:
+        log.warning("Jobs étudiants Indeed indisponibles (%s).", e)
+        return []
+
+    seen: set = set()
+    offers: list[dict] = []
+    try:
+        for q, ws in DEFAULT_REMOTE_STUDENT_QUERIES:
+            res = jobs_mod.search(query=q, location="France", country="FR", work_setting=ws, sort="date", page=1)
+            for j in (res or {}).get("jobs") or []:
+                jid = j.get("id") or j.get("link")
+                if not jid or jid in seen:
+                    continue
+                seen.add(jid)
+
+                if not is_truly_remote_job(j):
+                    continue
+
+                dt = job_date(j)
+                age = age_days(dt)
+                if max_age_days and max_age_days > 0:
+                    if age is not None and age > max_age_days:
+                        continue
+
+                comp = j.get("company") or {}
+                comp_name = comp.get("name") if isinstance(comp, dict) else comp
+                loc = j.get("location") or {}
+                loc_name = loc.get("display_name") if isinstance(loc, dict) else loc
+                posted = dt.isoformat(timespec="minutes") if dt else None
+
+                offers.append({
+                    "url": j.get("link") or jid,
+                    "title": (j.get("title") or "").strip(),
+                    "location": loc_name or "Télétravail",
+                    "employer_name": (comp_name or "Indeed").strip() or "Indeed",
+                    "application_url": j.get("apply_link") or j.get("link") or jid,
+                    "posted_at": posted,
+                    "date_publication": posted,
+                    "anciennete_jours": age,
+                    "source": SOURCE,
+                    "week_end": bool(WEEKEND_RE.search(_indeed.job_text(j))),
+                    "is_remote": True,
+                })
+            _indeed._pause(0.2, 0.4)
+    except Exception as e:
+        log.warning("Jobs étudiants télétravail Indeed : scraping partiel (%s).", e)
+
+    offers.sort(key=lambda x: (
+        max(0, x.get("anciennete_jours") if x.get("anciennete_jours") is not None else 999),
+        -(to_dt(x.get("posted_at")).timestamp() if to_dt(x.get("posted_at")) else 0),
+    ))
+    return offers[:limit] if limit and limit > 0 else offers
+
+
+def search_remote_interim_jobs(limit: int = 10, max_age_days: int = 14) -> list[dict]:
+    """Recherche live de missions intérim à distance / 100% télétravail dans toute la France sur Indeed."""
+    cfg = _student_config()
+    if not cfg.get("enabled", True):
+        return []
+
+    try:
+        jobs_mod = _indeed._import_jobs(_indeed._load_indeed_config())
+    except Exception as e:
+        log.warning("Missions intérim Indeed indisponibles (%s).", e)
+        return []
+
+    seen: set = set()
+    offers: list[dict] = []
+    try:
+        for q, ws in DEFAULT_REMOTE_INTERIM_QUERIES:
+            res = jobs_mod.search(query=q, location="France", country="FR", work_setting=ws, sort="date", page=1)
+            for j in (res or {}).get("jobs") or []:
+                jid = j.get("id") or j.get("link")
+                if not jid or jid in seen:
+                    continue
+                seen.add(jid)
+
+                if not is_truly_remote_job(j):
+                    continue
+
+                dt = job_date(j)
+                age = age_days(dt)
+                if max_age_days and max_age_days > 0:
+                    if age is not None and age > max_age_days:
+                        continue
+
+                comp = j.get("company") or {}
+                comp_name = comp.get("name") if isinstance(comp, dict) else comp
+                loc = j.get("location") or {}
+                loc_name = loc.get("display_name") if isinstance(loc, dict) else loc
+                posted = dt.isoformat(timespec="minutes") if dt else None
+
+                offers.append({
+                    "url": j.get("link") or jid,
+                    "title": (j.get("title") or "").strip(),
+                    "location": loc_name or "Télétravail",
+                    "employer_name": (comp_name or "Indeed").strip() or "Indeed",
+                    "application_url": j.get("apply_link") or j.get("link") or jid,
+                    "posted_at": posted,
+                    "date_publication": posted,
+                    "anciennete_jours": age,
+                    "source": SOURCE,
+                    "week_end": bool(WEEKEND_RE.search(_indeed.job_text(j))),
+                    "is_remote": True,
+                })
+            _indeed._pause(0.2, 0.4)
+    except Exception as e:
+        log.warning("Missions intérim télétravail Indeed : scraping partiel (%s).", e)
+
+    offers.sort(key=lambda x: (
+        max(0, x.get("anciennete_jours") if x.get("anciennete_jours") is not None else 999),
+        -(to_dt(x.get("posted_at")).timestamp() if to_dt(x.get("posted_at")) else 0),
+    ))
+    return offers[:limit] if limit and limit > 0 else offers

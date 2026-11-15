@@ -518,7 +518,7 @@ def status() -> None:
             high_score_retryable = retryable_tech.get("10", 0) + retryable_tech.get("9", 0)
             if high_score_retryable > 0:
                 console.print(
-                    f"[bold yellow]  ↳ {high_score_retryable} score 9-10 jobs in blocked_technical are retryable.[/bold yellow]"
+                    f"[bold yellow]  -> {high_score_retryable} score 9-10 jobs in blocked_technical are retryable.[/bold yellow]"
                     f" Run: [bold]applypilot reset-category blocked_technical[/bold]"
                 )
 
@@ -1044,7 +1044,7 @@ def creds_delete(
 
 @app.command()
 def bot() -> None:
-    """Lancer le pilotage Discord (recherche, cartes d'offres, boutons ✅/✏️/❌).
+    """Lancer le pilotage Discord (recherche, cartes d'offres, validation).
 
     Nécessite DISCORD_BOT_TOKEN et DISCORD_USER_ID dans ~/.applypilot/.env.
     """
@@ -1056,7 +1056,7 @@ def bot() -> None:
 
 @app.command(name="telegram-bot")
 def telegram_bot() -> None:
-    """Lancer le pilotage Telegram (recherche, offres, boutons ✅/✏️/❌).
+    """Lancer le pilotage Telegram (recherche, offres, validation).
 
     Nécessite TELEGRAM_BOT_TOKEN et TELEGRAM_USER_ID dans ~/.applypilot/.env.
     """
@@ -1064,6 +1064,72 @@ def telegram_bot() -> None:
     from applypilot.telegram_bot import main as run_tg
 
     run_tg()
+
+
+@app.command(name="experience")
+def add_experience_cli(
+    description: str = typer.Argument(..., help="Description libre ou titre du projet à ajouter."),
+) -> None:
+    """Ajoute un nouveau projet dans ~/.applypilot/experiences.json au format ATS."""
+    _bootstrap()
+    from applypilot.experiences_manager import add_experience
+    with console.status("[bold green]Analyse et structuration ATS du projet..."):
+        exp, path = add_experience(description)
+
+    console.print(f"[bold green][OK] Nouveau projet ajouté avec succès dans[/bold green] [cyan]{path}[/cyan] !")
+    console.print(f"  [bold]Titre :[/bold] {exp.get('title')}")
+    console.print(f"  [bold]Rôle :[/bold] {exp.get('role')} ({exp.get('org')})")
+    console.print(f"  [bold]Puces ATS :[/bold]")
+    for b in exp.get("bullets", []):
+        console.print(f"    - {b}")
+    console.print(f"  [bold]Technologies :[/bold] {', '.join(exp.get('tech', []))}")
+    console.print(f"  [bold]Tags :[/bold] {', '.join(exp.get('tags', []))}")
+
+
+@app.command(name="cv-reserve")
+def cv_reserve_cli(
+    branches: Optional[list[str]] = typer.Argument(
+        None, help="Branches à (re)générer (ex. SOC Pentest GRC). Toutes si omis."),
+    recompile: bool = typer.Option(
+        False, "--recompile",
+        help="Sans LLM : recompile les PDF depuis reserve/<Branche>.json (après correction manuelle d'une accroche)."),
+) -> None:
+    """(Re)génère les CV de réserve par branche cyber, envoyés quand le LLM ne répond pas."""
+    _bootstrap()
+    from applypilot import cv_latex
+
+    by_lower = {b.lower(): b for b in cv_latex.RESERVE_BRANCHES}
+    unknown = [b for b in (branches or []) if b.lower() not in by_lower]
+    if unknown:
+        console.print(f"[red]Branche inconnue :[/red] {', '.join(unknown)} "
+                      f"(choix : {', '.join(cv_latex.RESERVE_BRANCHES)})")
+        raise typer.Exit(code=1)
+    wanted = [by_lower[b.lower()] for b in (branches or [])] or None
+
+    with console.status("[bold green]Génération des CV de réserve (LLM + LaTeX)..."):
+        results = cv_latex.build_reserve(wanted, from_saved=recompile)
+
+    for branch, res in results.items():
+        if res.get("ok"):
+            pages = res.get("pages")
+            warn = "" if pages == 1 else f" [yellow]({pages} pages !)[/yellow]"
+            console.print(f"[bold green][OK][/bold green] {branch:<8} {res['pdf']}{warn}")
+            console.print(f"     [dim]{res['profil']}[/dim]")
+        else:
+            kept = f" — réserve précédente conservée : {res['pdf']}" if res.get("pdf") else ""
+            console.print(f"[bold red][ÉCHEC][/bold red] {branch:<8} {res.get('error')}{kept}")
+    if any(not r.get("ok") for r in results.values()):
+        raise typer.Exit(code=1)
+
+
+@app.command(name="cv-etudiant")
+def cv_etudiant_cli() -> None:
+    """Recompile le CV job étudiant depuis ~/.applypilot/cv_job_etudiant.json (sans LLM)."""
+    _bootstrap()
+    from applypilot import cv_latex
+
+    pdf = cv_latex.build_student_cv()
+    console.print(f"[bold green][OK][/bold green] CV job étudiant recompilé : {pdf}")
 
 
 if __name__ == "__main__":

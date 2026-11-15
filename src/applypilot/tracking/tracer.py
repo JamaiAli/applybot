@@ -116,9 +116,9 @@ def get_candidate_links() -> dict[str, str]:
         except Exception:
             pass
     return {
-        "portfolio": cand.get("portfolio") or "https://jamaiali.github.io",
-        "linkedin": cand.get("linkedin") or "https://www.linkedin.com/in/ali-jamai-078602297",
-        "github": cand.get("github") or "https://github.com/JamaiAli",
+        "portfolio": cand.get("portfolio") or "https://github.com",
+        "linkedin": cand.get("linkedin") or "https://www.linkedin.com",
+        "github": cand.get("github") or "https://github.com",
     }
 
 
@@ -176,6 +176,32 @@ def get_or_create_all_tracers(offer: dict) -> dict[str, str]:
         _, turl = get_or_create_tracer(offer, link_type=ltype)
         res[ltype] = turl
     return res
+
+
+def publish_tracers(offer: dict) -> dict[str, str] | None:
+    """Liens traceurs prêts à être écrits dans un CV pour cette offre, ou None
+    s'il faut y laisser les liens directs.
+
+    Avec un traceur hébergé (TRACER_API_KEY défini), les liens sont d'abord
+    déclarés au Worker : tant qu'il ne les connaît pas, il ne saurait pas où
+    rediriger le recruteur. Si la déclaration échoue, on renvoie None — un CV
+    avec des liens directs vaut mieux qu'un CV avec des liens qui mènent ailleurs.
+    """
+    urls = get_or_create_all_tracers(offer)
+    if not config.TRACER_API_KEY:
+        return urls  # serveur auto-hébergé, joignable directement
+    from applypilot.tracking import remote
+
+    job_url = offer.get("url") or ""
+    payload = []
+    for ltype in ("portfolio", "linkedin", "github"):
+        row = get_tracker_by_job_url(job_url, link_type=ltype) if job_url else None
+        if not row:
+            return None
+        payload.append({"token": row["token"], "target": row["target_url"], "link_type": ltype,
+                        "company": row.get("company") or "", "title": row.get("title") or "",
+                        "job_url": job_url})
+    return urls if remote.register(payload) else None
 
 
 # ---------------------------------------------------------------------------
@@ -308,27 +334,53 @@ async def handle_stats(request: web.Request) -> web.Response:
 def resolve_cv_path(job_url: str | None = None) -> Path | None:
     """Résout le chemin du CV PDF le plus pertinent pour la candidature."""
     from applypilot import bot_core
+    student_cv = config.APP_DIR / "cv_job_etudiant.pdf"
+
+    # 1. Vérification si c'est un job étudiant / intérim
+    if job_url and bot_core.is_student_job(job_url):
+        if student_cv.exists():
+            return student_cv
+
+    # 2. Vérification par URL dans la base jobs
     if job_url:
         row = bot_core.fetch_one(job_url)
         if row and row.get("tailored_resume_path"):
             p = Path(row["tailored_resume_path"])
             if p.exists():
                 return p
+
+    # 3. Vérification de la dernière offre préparée
+    if bot_core.get_last_prepared_type() == "student" and student_cv.exists():
+        return student_cv
+
+    last_prepared_cv = bot_core.get_last_prepared_cv()
+    if last_prepared_cv and last_prepared_cv.exists():
+        if last_prepared_cv == student_cv:
+            return student_cv
+
     last = bot_core.get_last_prepared()
     if last:
+        if bot_core.is_student_job(last) and student_cv.exists():
+            return student_cv
         row = bot_core.fetch_one(last)
         if row and row.get("tailored_resume_path"):
             p = Path(row["tailored_resume_path"])
             if p.exists():
                 return p
-    # CV adapté le plus récent généré
+
+    # 4. CV adapté le plus récent généré (pour stage / cybersécurité)
     cv_dir = config.APP_DIR / "cv_latex"
     if cv_dir.exists():
-        pdfs = sorted(cv_dir.glob("CV_Ali_Jamai_*.pdf"), key=lambda f: f.stat().st_mtime, reverse=True)
+        from applypilot.cv_latex import cv_prefix
+        pfx = cv_prefix()
+        pdfs = sorted(cv_dir.glob(f"{pfx}_*.pdf"), key=lambda f: f.stat().st_mtime, reverse=True)
+        if not pdfs:
+            pdfs = sorted(cv_dir.glob("*.pdf"), key=lambda f: f.stat().st_mtime, reverse=True)
         if pdfs:
             return pdfs[0]
-    # CV de secours
-    for fallback in [config.APP_DIR / "cv_job_etudiant.pdf", config.RESUME_PDF_PATH]:
+
+    # 5. CV de secours
+    for fallback in [student_cv, config.RESUME_PDF_PATH]:
         if fallback and Path(fallback).exists():
             return Path(fallback)
     return None
@@ -342,7 +394,7 @@ def get_candidate_data(job_url: str | None = None) -> dict:
     qa = autoapply._qa_knowledge()
 
     # Lien Portfolio ou Traceur pour cette offre
-    portfolio_url = pers.get("portfolio_url") or "https://jamaiali.github.io"
+    portfolio_url = pers.get("portfolio_url") or ""
     if job_url:
         try:
             _, turl = get_or_create_tracer({"url": job_url})
@@ -353,46 +405,60 @@ def get_candidate_data(job_url: str | None = None) -> dict:
         except Exception:
             pass
 
-    full = pers.get("full_name", "Ali Jamai")
+    full = pers.get("full_name", "Candidat")
     first = pers.get("preferred_name") or (full.split()[0] if full else "Ali")
-    last = " ".join(full.split()[1:]) if len(full.split()) > 1 else "Jamai"
+    last = " ".join(full.split()[1:]) if len(full.split()) > 1 else ""
 
     cv_p = resolve_cv_path(job_url)
-    city = pers.get("city", "Bourges")
-    postal = pers.get("postal_code", "18000")
+    from applypilot import bot_core
+    is_student = (cv_p and "cv_job_etudiant" in cv_p.name) or bot_core.is_student_job(job_url)
+    from applypilot.cv_latex import cv_prefix
+    pfx = cv_prefix()
+    cv_name = f"{pfx}_Job_Etudiant.pdf" if is_student else (cv_p.name if (cv_p and cv_p.exists()) else f"{pfx}.pdf")
+
+    city = pers.get("city", "")
+    postal = pers.get("postal_code", "")
     address = f"{city} ({postal}), France" if city and postal else (city or "France")
 
     edu = p.get("education", {})
+    qa_data = dict(qa)
+    if is_student:
+        qa_data["disponibilite"] = "Immédiate, disponible en semaine, en soirée et le week-end."
+        qa_data["disponibilite_stage"] = "Immédiate, disponible en semaine, en soirée et le week-end."
+        qa_data["type_contrat"] = "Job étudiant / Temps partiel / Intérim"
+        qa_data["mobilite_geographique"] = "Bourges et agglomération (titulaire du permis B)."
+        qa_data["teletravail"] = "Disponible sur site"
+
     return {
         "status": "ok",
         "personal": {
             "full_name": full,
             "first_name": first,
             "last_name": last,
-            "email": pers.get("email", "ali.jamai@insa-cvl.fr"),
-            "phone": pers.get("phone", "+33 7 59 55 10 21"),
+            "email": pers.get("email", ""),
+            "phone": pers.get("phone", ""),
             "address": address,
             "city": city,
             "postal_code": postal,
             "country": pers.get("country", "France"),
-            "nationality": pers.get("nationality", "Marocaine"),
-            "citizenship": pers.get("citizenship", "Maroc"),
-            "linkedin": pers.get("linkedin_url", "https://www.linkedin.com/in/ali-jamai-078602297"),
-            "github": pers.get("github_url", "https://github.com/JamaiAli"),
+            "nationality": pers.get("nationality", ""),
+            "citizenship": pers.get("citizenship", ""),
+            "linkedin": pers.get("linkedin_url", ""),
+            "github": pers.get("github_url", ""),
             "portfolio": portfolio_url,
         },
         "education": {
-            "school": edu.get("school", "INSA Centre Val de Loire"),
-            "degree": edu.get("degree", "Diplôme d'ingénieur en Cybersécurité"),
-            "specialite": edu.get("specialite", "Cybersécurité"),
-            "start_date": edu.get("start_date", "01/09/2023"),
-            "end_date": edu.get("end_date", "01/05/2028"),
+            "school": edu.get("school", ""),
+            "degree": edu.get("degree", ""),
+            "specialite": edu.get("specialite", ""),
+            "start_date": edu.get("start_date", ""),
+            "end_date": edu.get("end_date", ""),
             "is_current": edu.get("is_current", "Yes"),
-            "city": edu.get("city", "Bourges"),
+            "city": edu.get("city", ""),
         },
-        "qa": qa,
+        "qa": qa_data,
         "has_cv": bool(cv_p and cv_p.exists()),
-        "cv_name": cv_p.name if (cv_p and cv_p.exists()) else "CV_Ali_Jamai.pdf",
+        "cv_name": cv_name,
     }
 
 
@@ -409,11 +475,14 @@ async def handle_cv(request: web.Request) -> web.Response:
     cv_p = resolve_cv_path(job_url)
     if not cv_p or not cv_p.exists():
         return web.Response(status=404, text="CV non trouvé")
+    from applypilot.cv_latex import cv_prefix
+    pfx = cv_prefix()
+    filename = f"{pfx}_Job_Etudiant.pdf" if "cv_job_etudiant" in cv_p.name else cv_p.name
     return web.Response(
         body=cv_p.read_bytes(),
         content_type="application/pdf",
         headers={
-            "Content-Disposition": f'inline; filename="{cv_p.name}"',
+            "Content-Disposition": f'attachment; filename="{filename}"',
         },
     )
 
@@ -427,8 +496,54 @@ async def handle_smart_answer(request: web.Request) -> web.Response:
     question = (body.get("question") or "").strip()
     job_title = body.get("job_title", "")
     company = body.get("company", "")
+    try:
+        max_length = int(body.get("max_length") or 0)
+    except (TypeError, ValueError):
+        max_length = 0
     if not question:
         return web.json_response({"answer": "", "source": "none"})
+    answer, source = await asyncio.to_thread(smart_answer, question, job_title, company, max_length)
+    return web.json_response({"answer": answer, "source": source})
+
+
+def _candidate_facts() -> str:
+    """Faits réels du candidat, en clair, pour que le LLM réponde sans inventer."""
+    exp_path = config.APP_DIR / "experiences.json"
+    try:
+        data = json.loads(exp_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    cand = data.get("candidate", {})
+    lines = [f"Candidat : {cand.get('full_name', 'Candidat')}, {cand.get('title', '')}.",
+             f"Objectif : {cand.get('objective', '')}",
+             f"Lieu : {cand.get('location', '')}. Nationalité : {cand.get('nationality', '')}."]
+    for ed in data.get("education", []):
+        lines.append(f"Formation : {ed.get('institution', '')} — {ed.get('degree', '')} ({ed.get('dates', '')}).")
+    for exp in data.get("experiences", []):
+        first = str((exp.get("bullets") or [""])[0]).replace("**", "")
+        lines.append(f"{exp.get('type', 'projet')} : {exp.get('title', '')} ({exp.get('org', '')}, "
+                     f"{exp.get('dates', '')}). {first}")
+    for cat, items in data.get("skills", {}).items():
+        lines.append(f"Compétences {cat} : {', '.join(map(str, items))}.")
+    lines.append("Certifications : " + " ; ".join(map(str, data.get("certifications", []))))
+    lines.append("Langues : " + " ; ".join(f"{l.get('langue')} ({l.get('niveau')})" for l in data.get("languages", [])))
+    lines.append("Distinctions : " + " ; ".join(str(a).replace("**", "") for a in data.get("achievements", [])))
+    return "\n".join(lines)
+
+
+def smart_answer(question: str, job_title: str = "", company: str = "", max_length: int = 0) -> tuple[str, str]:
+    """Réponse à une question de formulaire de candidature : (réponse, source).
+
+    D'abord la banque de réponses (faits fixes : disponibilité, diplôme, mobilité…),
+    sinon le LLM, à partir des seuls faits réels du candidat. ``max_length`` :
+    taille maximale du champ (0 = libre).
+    """
+    def fit(text: str) -> str:
+        text = (text or "").strip()
+        if max_length and len(text) > max_length:
+            cut = text[:max_length]
+            text = cut[:cut.rfind(" ")].rstrip(" ,;:") if " " in cut else cut
+        return text
 
     from applypilot import autoapply
     qa = autoapply._qa_knowledge()
@@ -436,6 +551,10 @@ async def handle_smart_answer(request: web.Request) -> web.Response:
 
     # Table de correspondances avancées pour la banque Q&A
     qa_rules = [
+        # Questions préliminaires fréquentes (SmartRecruiters…), à tester avant les règles larges.
+        (re.compile(r"ann[ée]es?\s+d.exp[ée]rience|years?\s+of\s+(professional\s+)?experience", re.I), "annees_experience"),
+        (re.compile(r"dipl[ôo]me\s+obtenu|plus\s+haut\s+(niveau|dipl)|highest\s+(degree|level)", re.I), "diplome_obtenu"),
+        (re.compile(r"entendu\s+parler|heard\s+about|connu\s+notre|how\s+did\s+you\s+(hear|find)", re.I), "source_offre"),
         (re.compile(r"convention", re.I), "convention_stage"),
         (re.compile(r"permis|driving[\s_-]*licen", re.I), "permis_de_conduire"),
         (re.compile(r"v[ée]hicule|voiture|car[\s_-]*owner", re.I), "vehicule_personnel"),
@@ -456,62 +575,78 @@ async def handle_smart_answer(request: web.Request) -> web.Response:
         (re.compile(r"handicap|rqth|disability", re.I), "handicap"),
     ]
 
+    prof = autoapply._profile()
+    pers = prof.get("personal", {})
+    edu = prof.get("education", {})
+    school_name = edu.get("school") or prof.get("experience", {}).get("school") or ""
+    start_date_str = prof.get("internship", {}).get("start_date") or prof.get("availability", {}).get("earliest_start_date") or ""
+    conv_school = f" par mon établissement ({school_name})" if school_name else " par mon établissement"
+
     sentence_answers = {
-        "convention_stage": "Oui, je disposerai d'une convention de stage délivrée par mon école (l'INSA Centre Val de Loire) pour toute la durée du stage.",
-        "date_debut_stage": "Je suis disponible pour débuter mon stage à partir du 5 avril 2027 pour une durée de 4 à 6 mois.",
-        "date_fin_demarrage_stage": "Je suis disponible pour le démarrage de mon stage jusqu'en septembre 2027 au plus tard.",
-        "etablissement": "INSA Centre Val de Loire",
-        "type_stage": "Stage élève-ingénieur (Fin de Master 1 / Césure 1ère partie - Bac+4/5 à l'INSA Centre Val de Loire).",
-        "duree_stage": "Je recherche un stage d'une durée de 4 à 6 mois (avril à août/septembre 2027).",
-        "disponibilite_stage": "Je suis disponible à partir du 5 avril 2027 pour une durée de 4 à 6 mois.",
+        "convention_stage": f"Oui, je disposerai d'une convention de stage délivrée{conv_school} pour toute la durée du stage.",
+        "date_debut_stage": f"Je suis disponible pour débuter mon stage à partir de {start_date_str}." if start_date_str else "",
+        "etablissement": school_name,
+        "type_stage": prof.get("internship", {}).get("type", "Stage conventionné"),
+        "duree_stage": prof.get("internship", {}).get("duration", "4 à 6 mois"),
+        "disponibilite_stage": prof.get("internship", {}).get("availability") or start_date_str,
         "pretentions_salariales": "Selon la grille légale de rémunération des stagiaires en vigueur au sein de l'entreprise.",
-        "mobilite_geographique": "Je suis totalement mobile sur l'ensemble de la France, avec une préférence pour l'Île-de-France et la région Centre-Val de Loire.",
-        "permis_de_conduire": "Oui, je suis titulaire du permis B.",
-        "vehicule_personnel": "Non",
-        "nationalite": "Marocaine",
+        "mobilite_geographique": prof.get("internship", {}).get("remote_preference", "Mobile en France."),
+        "permis_de_conduire": qa.get("permis_de_conduire", "Oui, je suis titulaire du permis de conduire."),
+        "vehicule_personnel": qa.get("vehicule_personnel", "Non"),
+        "nationalite": pers.get("nationality", ""),
         "teletravail": "Je suis disponible pour travailler sur site, en mode hybride ou en télétravail.",
-        "niveau_etudes": "Bac+4 (Élève-ingénieur en 4ème année à l'INSA Centre Val de Loire).",
-        "diplome_prepare": "Diplôme d'ingénieur en Cybersécurité (INSA Centre Val de Loire).",
-        "annee_diplome": "2028 (cursus ingénieur en 5 ans).",
-        "langues": "Français (langue maternelle) et Anglais (courant professionnel, score TOEIC 980/990).",
-        "source_offre": "LinkedIn",
+        "niveau_etudes": prof.get("experience", {}).get("education_level", ""),
+        "diplome_prepare": edu.get("degree") or prof.get("experience", {}).get("education_level", ""),
+        "source_offre": qa.get("source_offre") or "Via une plateforme d'offres en ligne.",
         "handicap": "Non concerné",
+        "annees_experience": "0 : je suis étudiant, mon expérience vient de mes stages et de mes projets.",
+        "diplome_obtenu": qa.get("diplome_obtenu") or "Baccalauréat (cursus supérieur en cours)",
+        "date_fin_demarrage_stage": qa.get("date_fin_demarrage_stage") or "Démarrage possible selon les dates de la convention.",
     }
 
     for pat, key in qa_rules:
         if pat.search(q_lower):
-            ans = sentence_answers.get(key) or qa.get(key)
+            ans = qa.get(key) or sentence_answers.get(key)
             if ans:
-                return web.json_response({"answer": ans, "source": "qa_bank"})
+                return fit(ans), "qa_bank"
 
     # Recherche directe par nom de clé Q&A
+    # Seulement si la question contient l'intitulé complet de la clé. Un seul mot en
+    # commun ne suffit pas : « stage » ou « durée » figurent dans presque toutes les
+    # questions, et une question de motivation recevait la réponse sur la disponibilité.
     for k, v in qa.items():
         k_clean = k.replace("_", " ").lower()
-        if k_clean in q_lower or any(word in q_lower for word in k_clean.split() if len(word) > 4):
-            return web.json_response({"answer": v, "source": "qa_bank"})
+        if len(k_clean) > 5 and k_clean in q_lower:
+            return fit(str(v)), "qa_bank"
 
     # Génération IA (Groq / Gemini) sans invention
     try:
         from applypilot.llm import get_client
         client = get_client()
-        exp_path = config.APP_DIR / "experiences.json"
-        exp_text = exp_path.read_text(encoding="utf-8") if exp_path.exists() else ""
+        limit = (f"La réponse doit tenir en {max_length} caractères MAXIMUM. " if max_length else "")
+        short = max_length and max_length <= 250
         system_prompt = (
-            "Tu es l'assistant de candidature pour Ali Jamai (élève-ingénieur en cybersécurité à l'INSA Centre Val de Loire). "
-            "Rédige une réponse concise (1 à 3 phrases claires, directes, professionnelles, ton ingénieur) en français "
-            "pour répondre à cette question de recruteur. Base-toi STRICTEMENT sur les faits réels fournis ci-dessous sans rien inventer.\n\n"
-            f"Faits réels du candidat :\n{exp_text[:2000]}"
+            "Tu réponds, à la place du candidat et à la première personne, à une question d'un formulaire de "
+            "candidature à un stage. Réponds en français, directement, sans formule d'introduction ni de politesse. "
+            + ("Réponse très courte : quelques mots ou une phrase. " if short
+               else "Réponse concise : 2 à 4 phrases claires, ton professionnel et naturel. ")
+            + limit +
+            "RÈGLE ABSOLUE : appuie-toi UNIQUEMENT sur les faits ci-dessous. N'invente aucune expérience, "
+            "compétence, date, chiffre ni diplôme. Si les faits ne permettent pas de répondre, dis-le simplement "
+            "et honnêtement en une phrase plutôt que d'inventer. N'affirme RIEN sur l'entreprise (son activité, "
+            "sa taille, sa réputation) : tu ne la connais pas ; parle de ce que je cherche et de ce que je sais faire.\n\n"
+            f"FAITS RÉELS DU CANDIDAT :\n{_candidate_facts()[:6000]}"
         )
-        user_prompt = f"Entreprise : {company}\nPoste : {job_title}\nQuestion posée : {question}"
+        user_prompt = f"Entreprise : {company}\nPoste / page : {job_title}\nQuestion posée : {question}"
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
-        reply = await asyncio.to_thread(client.chat, messages=messages, max_tokens=500)
-        return web.json_response({"answer": reply.strip(), "source": "ai"})
+        reply = client.chat(messages=messages, max_tokens=600)
+        return fit(reply.strip().strip('"«» ')), "ai"
     except Exception as exc:
         log.warning("Smart answer échec : %s", exc)
-        return web.json_response({"answer": "", "source": "error"})
+        return "", "error"
 
 
 async def handle_smart_select(request: web.Request) -> web.Response:
@@ -544,19 +679,10 @@ async def handle_smart_select(request: web.Request) -> web.Response:
             for opt in options[:40]
         )
 
+        cand_facts = _candidate_facts()
         system_prompt = (
-            "Tu es l'assistant de candidature pour Ali Jamai (élève-ingénieur en cybersécurité Bac+4/5 à l'INSA Centre Val de Loire).\n"
-            "Profil réel du candidat :\n"
-            "- Statut : Étudiant en école d'ingénieur en cybersécurité (INSA)\n"
-            "- Niveau d'études : Bac +4 / Bac +5 (Master / Diplôme d'ingénieur en cours)\n"
-            "- Expérience : 1 à 2 ans d'expérience cumulée (stages, projets pentest, CTF)\n"
-            "- Mobilité : Île-de-France, Centre-Val de Loire, France entière, Télétravail\n"
-            "- Langues : Français (natif), Anglais (courant / professionnel C1)\n"
-            "- Permis B : Oui\n"
-            "- Véhicule personnel : Non\n"
-            "- RQTH / Handicap : Non\n"
-            "- Nationalité : Français / Autorisation de travail en France valide (Oui)\n"
-            "- Type de contrat recherché : Stage (fin d'études ou césure / alternance)\n\n"
+            "Tu es l'assistant de candidature pour postuler aux offres de stage et d'emploi.\n"
+            f"FAITS RÉELS DU CANDIDAT :\n{cand_facts[:2000]}\n\n"
             "Tâche : Parmi la liste d'options ci-dessous pour ce champ de formulaire, choisis l'option qui correspond le mieux au profil réel du candidat.\n"
             "Réponds STRICTEMENT par un objet JSON au format exact suivant, sans aucun autre texte :\n"
             '{"selected_value": "<la valeur exacte choisie>"}'
@@ -622,11 +748,13 @@ async def cors_middleware(request: web.Request, handler) -> web.StreamResponse:
             ex.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
             ex.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Requested-With, Access-Control-Request-Private-Network"
             ex.headers["Access-Control-Allow-Private-Network"] = "true"
+            ex.headers["Access-Control-Expose-Headers"] = "Content-Disposition"
             raise ex
     resp.headers["Access-Control-Allow-Origin"] = "*"
     resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Requested-With, Access-Control-Request-Private-Network"
     resp.headers["Access-Control-Allow-Private-Network"] = "true"
+    resp.headers["Access-Control-Expose-Headers"] = "Content-Disposition"
     return resp
 
 

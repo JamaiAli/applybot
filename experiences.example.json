@@ -1,0 +1,105 @@
+{
+  "_description": "Exemple fictif. Copie ce fichier vers ~/.applypilot/experiences.json et remplace TOUT par tes vraies informations. Le moteur de CV ne prend ses faits que dans ce fichier : il n'invente rien, donc ce qui n'est pas ici n'apparaîtra jamais sur un CV.",
+  "candidate": {
+    "full_name": "Camille Martin",
+    "title": "Élève-ingénieure en cybersécurité — École Exemple",
+    "objective": "Stage de 6 mois à partir de mars 2027 en sécurité des systèmes d'information.",
+    "location": "Lyon (69000), France",
+    "email": "camille.martin@example.com",
+    "phone": "+33 6 00 00 00 00",
+    "linkedin": "https://www.linkedin.com/in/camille-martin-exemple",
+    "github": "https://github.com/camille-exemple",
+    "portfolio": "https://camille-exemple.github.io",
+    "nationality": "Française",
+    "citizenship": "France"
+  },
+  "education": [
+    {
+      "institution": "Diplôme d'ingénieur (Bac+5), spécialité informatique",
+      "degree": "École Exemple, Lyon",
+      "dates": "09/2023 – 06/2028",
+      "start_date": "01/09/2023",
+      "end_date": "01/06/2028",
+      "is_current": "Yes"
+    },
+    {
+      "institution": "Lycée Exemple, Lyon",
+      "degree": "Baccalauréat général, mention Bien",
+      "dates": "09/2020 – 07/2023"
+    }
+  ],
+  "experiences": [
+    {
+      "id": "stage-support-informatique",
+      "type": "experience_pro",
+      "title": "Stage support informatique --- Société Exemple",
+      "org": "Société Exemple",
+      "team": true,
+      "dates": "06/2025 -- 08/2025",
+      "role": "Stagiaire",
+      "context": "Stage d'été au service informatique d'une PME.",
+      "bullets": [
+        "**Traité 120 demandes d'utilisateurs** en deux mois (comptes, postes, imprimantes) avec un outil de tickets.",
+        "**Rédigé 8 procédures** pour les demandes les plus fréquentes."
+      ],
+      "tech": ["Windows 11", "Active Directory", "GLPI"],
+      "results": ["120 demandes traitées"],
+      "links": [],
+      "tags": ["support", "administration-systeme", "active-directory"],
+      "relevance": "high"
+    },
+    {
+      "id": "audit-site-web-association",
+      "type": "projet_technique",
+      "title": "Audit de sécurité du site web d'une association",
+      "org": "Projet personnel",
+      "team": false,
+      "dates": "02/2026",
+      "role": "Auditrice",
+      "context": "Audit bénévole, avec l'accord écrit de l'association.",
+      "bullets": [
+        "**Identifié 6 vulnérabilités** (dont 2 critiques) alignées sur l'OWASP Top 10, chacune documentée avec son correctif.",
+        "**Rédigé le rapport d'audit** et présenté les priorités de correction au bureau de l'association."
+      ],
+      "tech": ["Burp Suite", "Nmap", "OWASP Top 10"],
+      "results": ["6 vulnérabilités corrigées"],
+      "links": ["https://github.com/camille-exemple/audit-association"],
+      "tags": ["pentest", "audit", "web-security", "securite-offensive"],
+      "relevance": "high"
+    },
+    {
+      "id": "lab-supervision-wazuh",
+      "type": "projet_technique",
+      "title": "Lab de supervision de sécurité avec Wazuh",
+      "org": "Projet personnel",
+      "team": false,
+      "dates": "05/2026",
+      "role": "Conceptrice",
+      "context": "Lab personnel de détection.",
+      "bullets": [
+        "**Déployé un SIEM Wazuh** collectant les journaux de 3 machines virtuelles.",
+        "**Écrit 4 règles de détection** (brute force SSH, création de compte administrateur)."
+      ],
+      "tech": ["Wazuh", "Linux", "VirtualBox"],
+      "results": [],
+      "links": [],
+      "tags": ["soc", "siem", "detection", "securite-defensive"],
+      "relevance": "medium"
+    }
+  ],
+  "skills": {
+    "securite_offensive_pentest": ["OWASP Top 10", "Burp Suite", "Nmap"],
+    "securite_defensive_systeme": ["Wazuh", "Analyse de logs"],
+    "systemes_reseaux": ["Linux", "Windows 11", "VirtualBox"],
+    "active_directory_identite": ["Active Directory"],
+    "developpement": ["Python", "Git"]
+  },
+  "certifications": ["Exemple de certification — en cours"],
+  "languages": [
+    {"langue": "Français", "niveau": "Langue maternelle"},
+    {"langue": "Anglais", "niveau": "Courant (TOEIC 900/990)"}
+  ],
+  "achievements": ["**Finaliste d'un CTF étudiant.**"],
+  "soft_skills": ["Autonomie", "rigueur", "sens du service"],
+  "loisirs": ["Escalade", "photographie"]
+}

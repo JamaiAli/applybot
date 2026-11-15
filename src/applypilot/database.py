@@ -244,7 +244,8 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
             last_attempted_at     TEXT,
             apply_duration_ms     INTEGER,
             apply_task_id         TEXT,
-            verification_confidence TEXT
+            verification_confidence TEXT,
+            category              TEXT
         )
     """)
     conn.execute("""
@@ -367,6 +368,7 @@ _ALL_COLUMNS: dict[str, str] = {
     # Additif : les offres existantes et HelloWork restent inchangées (NULL possible).
     "source": "TEXT",
     "domaines": "TEXT",
+    "category": "TEXT",                      # 'stage' | 'alternance' | 'job_etudiant'
     # Enrichment
     "full_description": "TEXT",
     "application_url": "TEXT",
@@ -2382,11 +2384,15 @@ def record_tracker_hit(
     ip: str,
     user_agent: str,
     conn: sqlite3.Connection | None = None,
+    opened_at: str | None = None,
 ) -> dict | None:
-    """Enregistre une consultation (clic recruteur) et renvoie le traceur mis à jour."""
+    """Enregistre une consultation (clic recruteur) et renvoie le traceur mis à jour.
+
+    ``opened_at`` : date réelle du clic (ISO) quand il a été reçu ailleurs et
+    rapatrié après coup (traceur hébergé) ; par défaut, maintenant."""
     c = conn or get_connection()
     c.row_factory = sqlite3.Row
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = opened_at or datetime.now(timezone.utc).isoformat()
     row = c.execute("SELECT * FROM cv_trackers WHERE token = ?", (token,)).fetchone()
     if not row:
         return None
@@ -2425,6 +2431,75 @@ def get_recent_trackers(limit: int = 15, conn: sqlite3.Connection | None = None)
         (limit,),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def _is_local_ip(ip: str | None) -> bool:
+    """Clic venu de la machine ou du réseau local : un test, pas un recruteur."""
+    ip = (ip or "").strip()
+    if ip.startswith(("127.", "10.", "192.168.", "::1", "localhost")):
+        return True
+    if ip.startswith("172."):
+        try:
+            return 16 <= int(ip.split(".")[1]) <= 31
+        except (IndexError, ValueError):
+            return False
+    return False
+
+
+def get_tracker_overview(conn: sqlite3.Connection | None = None) -> dict:
+    """Vue d'ensemble des liens traceurs, regroupée PAR OFFRE (une offre = trois
+    liens : portfolio, LinkedIn, GitHub).
+
+    Seuls comptent les liens rattachés à une offre encore présente en base ; les
+    autres (tests, CV de réserve, offres supprimées) sont dénombrés à part comme
+    « orphelins » et ne polluent pas l'affichage.
+
+    Renvoie {"offers": [...], "permanent": {type: clics}, "orphans": n}, les
+    offres consultées d'abord (clic le plus récent en tête), puis les plus
+    récemment préparées. Chaque offre : company, title, job_url, opens,
+    links {type: clics}, last_opened_at, user_agent, local_only.
+    """
+    c = conn or get_connection()
+    c.row_factory = sqlite3.Row
+    rows = c.execute(
+        """
+        SELECT t.*, j.title AS job_title, j.company AS job_company, j.site AS job_site,
+               (j.url IS NOT NULL) AS known_offer
+        FROM cv_trackers t LEFT JOIN jobs j ON j.url = t.job_url
+        """
+    ).fetchall()
+
+    offers: dict[str, dict] = {}
+    permanent: dict[str, int] = {}
+    orphans = 0
+    for r in rows:
+        opens = r["open_count"] or 0
+        ltype = r["link_type"] or "portfolio"
+        if r["job_url"] == "profil_permanent":
+            permanent[ltype] = permanent.get(ltype, 0) + opens
+            continue
+        if not r["known_offer"]:
+            orphans += 1
+            continue
+        o = offers.setdefault(r["job_url"], {
+            "job_url": r["job_url"],
+            "company": r["job_company"] or r["company"] or r["job_site"] or "Entreprise",
+            "title": r["job_title"] or r["title"] or "Offre",
+            "opens": 0, "links": {}, "last_opened_at": None, "user_agent": None,
+            "created_at": r["created_at"], "local_only": True,
+        })
+        o["links"][ltype] = o["links"].get(ltype, 0) + opens
+        o["opens"] += opens
+        o["created_at"] = max(o["created_at"] or "", r["created_at"] or "")
+        if opens:
+            if not _is_local_ip(r["ip"]):
+                o["local_only"] = False
+            if (r["last_opened_at"] or "") >= (o["last_opened_at"] or ""):
+                o["last_opened_at"], o["user_agent"] = r["last_opened_at"], r["user_agent"]
+
+    ordered = sorted(offers.values(), key=lambda o: o["created_at"] or "", reverse=True)
+    ordered.sort(key=lambda o: o["last_opened_at"] or "", reverse=True)  # tri stable : consultées en tête
+    return {"offers": ordered, "permanent": permanent, "orphans": orphans}
 
 
 def get_tracker_stats(conn: sqlite3.Connection | None = None) -> dict:

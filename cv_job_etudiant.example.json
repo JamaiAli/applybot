@@ -1,0 +1,34 @@
+{
+  "subtitle": "Étudiante ingénieure — École Exemple",
+  "banner": "Job étudiant — Accueil, vente, restauration",
+  "profil": "Étudiante ingénieure en 4e année, je recherche un **job étudiant compatible avec mes études** (soirées, week-ends et vacances universitaires). J'ai déjà travaillé en vente et en restauration rapide. Ponctuelle, à l'aise avec le public et rapidement opérationnelle.",
+  "experiences": [
+    {
+      "title": "Vendeuse",
+      "org": "Boulangerie Exemple, Lyon",
+      "dates": "07/2025 – 08/2025",
+      "bullets": [
+        "**Accueilli et servi les clients**, prise de commande et encaissement.",
+        "**Tenu la caisse** et assuré la mise en rayon aux heures d'affluence."
+      ]
+    },
+    {
+      "title": "Équipière polyvalente",
+      "org": "Restauration rapide Exemple, Lyon",
+      "dates": "09/2024 – 06/2025",
+      "bullets": [
+        "**Préparé les commandes** en respectant les règles d'hygiène et les temps de service."
+      ]
+    }
+  ],
+  "skills": [
+    {"label": "Relation client", "text": "accueil, conseil, gestion des réclamations."},
+    {"label": "Vente & caisse", "text": "prise de commande, encaissement."},
+    {"label": "Savoir-être", "text": "ponctualité, autonomie, esprit d'équipe."}
+  ],
+  "practical": [
+    {"label": "Disponibilités", "text": "soirées et week-ends en période universitaire ; temps plein pendant les vacances."},
+    {"label": "Langues", "text": "Français — langue maternelle ; Anglais — courant."},
+    {"label": "Permis", "text": "permis B."}
+  ]
+}

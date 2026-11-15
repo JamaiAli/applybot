@@ -97,21 +97,21 @@ def _field_values(p: dict) -> list[tuple[re.Pattern, str]]:
         r"(linkedin)": pers.get("linkedin_url", ""),
         r"(github)": pers.get("github_url", ""),
         r"(portfolio|site[\s_-]*web|website|site perso)": pers.get("portfolio_url", ""),
-        r"(nationalit[ée]|nationality|citoyennet[ée]|citizenship)": pers.get("nationality", "Marocaine"),
-        r"(quel[\s_-]*[ée]tablissement|[ée]tablissement.*inscrit|inscrit.*[ée]tablissement|\b[eé]tablissement\b|\b[eé]cole\b|\bschool\b|\binstitution\b|\buniversit[eé]\b)": edu.get("school", "INSA Centre Val de Loire"),
+        r"(nationalit[ée]|nationality|citoyennet[ée]|citizenship)": pers.get("nationality", ""),
+        r"(quel[\s_-]*[ée]tablissement|[ée]tablissement.*inscrit|inscrit.*[ée]tablissement|\b[eé]tablissement\b|\b[eé]cole\b|\bschool\b|\binstitution\b|\buniversit[eé]\b)": edu.get("school", ""),
         r"([àa]\s*partir\s*de\s*quand.*disponible|disponible.*d[ée]but|date.*d[ée]but.*stage|d[ée]but.*stage|start.*date.*internship)": "Je suis disponible pour débuter mon stage à partir du 5 avril 2027 pour une durée de 4 à 6 mois.",
         r"(jusqu.*quand.*disponible|d[ée]marrage.*stage|date.*limite.*d[ée]marrage|fin.*d[ée]marrage)": "Je suis disponible pour le démarrage de mon stage jusqu'en septembre 2027 au plus tard.",
         r"(convention.*stage|disposerez.*convention|b[ée]n[ée]ficierez.*convention)": "Oui, je disposerai d'une convention de stage délivrée par mon école (l'INSA Centre Val de Loire) pour toute la durée du stage.",
         r"(type.*stage|nature.*stage)": "Stage élève-ingénieur (Fin de Master 1 / Césure 1ère partie - Bac+4/5 à l'INSA Centre Val de Loire).",
         r"(dur[ée]e.*stage|duration.*internship)": "Je recherche un stage d'une durée de 4 à 6 mois.",
-        r"(\bdipl[oô]me\b|\bdegree\b|\bdiploma\b)": edu.get("degree", "Diplôme d'ingénieur en Cybersécurité"),
-        r"(sp[ée]cialit[ée]|field[\s_-]*of[\s_-]*study|major)": edu.get("specialite", "Cybersécurité"),
-        r"(date[\s_-]*(?:de[\s_-]*)?d[ée]but.*formation|start[\s_-]*date.*education)": edu.get("start_date", "01/09/2023"),
-        r"(date[\s_-]*(?:de[\s_-]*)?fin.*formation|end[\s_-]*date.*education|graduation[\s_-]*date)": edu.get("end_date", "01/05/2028"),
+        r"(\bdipl[oô]me\b|\bdegree\b|\bdiploma\b)": edu.get("degree", ""),
+        r"(sp[ée]cialit[ée]|field[\s_-]*of[\s_-]*study|major)": edu.get("specialite", ""),
+        r"(date[\s_-]*(?:de[\s_-]*)?d[ée]but.*formation|start[\s_-]*date.*education)": edu.get("start_date", ""),
+        r"(date[\s_-]*(?:de[\s_-]*)?fin.*formation|end[\s_-]*date.*education|graduation[\s_-]*date)": edu.get("end_date", ""),
         r"(formation[\s_-]*en[\s_-]*cours|currently[\s_-]*enrolled|is[\s_-]*current)": edu.get("is_current", "Yes"),
         r"(pr[ée]tention|salaire|salary|compensation|remun[ée]ration|gratification)": "Selon la grille légale de rémunération des stagiaires en vigueur au sein de l'entreprise.",
         r"(mobilit[ée]|d[ée]placement|relocat)": "Je suis totalement mobile sur l'ensemble de la France, avec une préférence pour l'Île-de-France et la région Centre-Val de Loire.",
-        r"(ville|habitez|city|localit[ée]|lieu)": pers.get("city", "Bourges"),
+        r"(ville|habitez|city|localit[ée]|lieu)": pers.get("city", ""),
     }
     return [(re.compile(k, re.I), v) for k, v in pairs.items() if v]
 
@@ -197,6 +197,12 @@ _APPLY_SELECTOR = (
     "a:has-text('Déposer'), button:has-text('Déposer'), "
     "button:has-text('candidature'), a:has-text('candidature'), "
     "a:has-text('Apply'), button:has-text('Apply'), "
+    "a:has-text('intéressé'), button:has-text('intéressé'), "
+    "a:has-text('interested'), button:has-text('interested'), "
+    "a:has-text('Postuler maintenant'), button:has-text('Postuler maintenant'), "
+    "a:has-text('Postuler à cette offre'), button:has-text('Postuler à cette offre'), "
+    "a[href*='apply'], button[id*='apply' i], button[class*='apply' i], "
+    "[data-test*='apply' i], [data-testid*='apply' i], [data-qa*='apply' i], "
     "[data-cy='applyButtonHeader'], [data-cy='applyButton']"  # HelloWork
 )
 
@@ -336,39 +342,175 @@ _JS_NATIVE_SET = r"""
 """
 
 
+# JS : Détection et remplissage intelligent avec traversée des Shadow Roots (Web Components).
+_JS_DEEP_FILL = r"""
+(prof) => {
+  function deepQueryAll(selector, root = document, out = []) {
+    try {
+      root.querySelectorAll(selector).forEach(el => out.push(el));
+      root.querySelectorAll('*').forEach(el => {
+        if (el.shadowRoot) deepQueryAll(selector, el.shadowRoot, out);
+      });
+    } catch (_e) {}
+    return out;
+  }
+
+  function setNativeValue(el, val) {
+    if (!el || val === undefined || val === null) return false;
+    try {
+      el.focus();
+      if (el.isContentEditable) {
+        el.innerText = val;
+        el.dispatchEvent(new Event('input', { bubbles: true, cancelable: true, composed: true }));
+        return true;
+      }
+      const proto = el instanceof HTMLTextAreaElement ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+      const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+      if (desc && desc.set) {
+        desc.set.call(el, val);
+      } else {
+        el.value = val;
+      }
+      const tracker = el._valueTracker;
+      if (tracker) {
+        tracker.setValue('');
+      }
+      try {
+        el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, composed: true, inputType: 'insertText', data: val }));
+      } catch (_e) {
+        el.dispatchEvent(new Event('input', { bubbles: true, cancelable: true, composed: true }));
+      }
+      el.dispatchEvent(new Event('change', { bubbles: true, cancelable: true, composed: true }));
+      el.dispatchEvent(new FocusEvent('blur', { bubbles: true, cancelable: true, composed: true }));
+      try { el.style.border = '2px solid #10b981'; } catch (_e) {}
+      return true;
+    } catch (_e) {
+      return false;
+    }
+  }
+
+  const pers = (prof && prof.personal) || {};
+  const edu = (prof && prof.education) || {};
+  const full = pers.full_name || '';
+  const first = pers.preferred_name || (full ? full.split(' ')[0] : '');
+  const last = full ? full.split(' ').slice(1).join(' ') : '';
+
+  const rules = [
+    { re: /(pr[ée]nom|first[\s_-]*name|given)/i, val: first },
+    { re: /(nom(?![\s_-]*utilisateur)|last[\s_-]*name|surname|family)/i, val: last },
+    { re: /(e[\s_-]?mail|courriel)/i, val: pers.email || '' },
+    { re: /(t[ée]l[ée]phone|phone|mobile|portable|num[ée]ro|joindre)/i, val: pers.phone || '' },
+    { re: /(code[\s_-]*postal|postal[\s_-]*code|zip)/i, val: pers.postal_code || '' },
+    { re: /(ville|city|commune|localit[ée]|lieu)/i, val: pers.city || '' },
+    { re: /(adresse|address|rue|street)/i, val: pers.address || '' },
+    { re: /(linkedin)/i, val: pers.linkedin_url || '' },
+    { re: /(github)/i, val: pers.github_url || '' },
+    { re: /(portfolio|site[\s_-]*web|website)/i, val: pers.portfolio_url || '' },
+    { re: /(nationalit[ée]|nationality|citoyennet[ée])/i, val: pers.nationality || 'Française' },
+    { re: /([eé]tablissement|[eé]cole|school|university|universit[eé])/i, val: edu.school || '' },
+    { re: /(dipl[oô]me|degree|diploma)/i, val: edu.degree || '' },
+    { re: /(sp[ée]cialit[ée]|field[\s_-]*of[\s_-]*study|major)/i, val: edu.specialite || '' }
+  ];
+
+  let filled = 0;
+  const inputs = deepQueryAll('input:not([type="hidden"]):not([type="password"]):not([type="submit"]):not([type="file"]):not([type="button"]):not([type="reset"]), textarea');
+  inputs.forEach((el) => {
+    try {
+      const currentVal = (el.value || el.innerText || '').trim();
+      if (currentVal && currentVal.length > 0) return;
+      const r = el.getBoundingClientRect();
+      if (!(r.width && r.height) && el.type !== 'textarea') return;
+
+      let parts = [];
+      if (el.name) parts.push(el.name);
+      if (el.id) parts.push(el.id);
+      if (el.getAttribute('placeholder')) parts.push(el.getAttribute('placeholder'));
+      if (el.getAttribute('aria-label')) parts.push(el.getAttribute('aria-label'));
+      const lbl = el.closest('label');
+      if (lbl && lbl.innerText) parts.push(lbl.innerText);
+      if (el.id) {
+        try {
+          const l = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+          if (l && l.innerText) parts.push(l.innerText);
+        } catch (_e) {}
+      }
+      let cur = el;
+      for (let d = 0; d < 3 && cur && cur !== document.body; d++) {
+        let prev = cur.previousElementSibling;
+        while (prev) {
+          const txt = (prev.innerText || '').trim();
+          if (txt && txt.length > 1 && txt.length < 200) { parts.push(txt); break; }
+          prev = prev.previousElementSibling;
+        }
+        cur = cur.parentElement;
+      }
+      const fullLabel = parts.join(' ').toLowerCase();
+      for (const rule of rules) {
+        if (rule.re.test(fullLabel)) {
+          if (setNativeValue(el, rule.val)) {
+            filled++;
+            break;
+          }
+        }
+      }
+    } catch (_e) {}
+  });
+
+  return filled;
+};
+"""
+
+_JS_ATTACH_CV_BASE64 = r"""
+(payload) => {
+  function deepQueryAll(selector, root = document, out = []) {
+    try {
+      root.querySelectorAll(selector).forEach(el => out.push(el));
+      root.querySelectorAll('*').forEach(el => {
+        if (el.shadowRoot) deepQueryAll(selector, el.shadowRoot, out);
+      });
+    } catch (_e) {}
+    return out;
+  }
+
+  try {
+    const b64 = payload.base64;
+    const filename = payload.filename || 'CV.pdf';
+    const binary = atob(b64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    const file = new File([bytes], filename, { type: 'application/pdf' });
+    const dt = new DataTransfer();
+    dt.items.add(file);
+
+    const fileInputs = deepQueryAll('input[type="file"]');
+    for (const input of fileInputs) {
+      if (input.files && input.files.length > 0) continue;
+      try {
+        input.files = dt.files;
+        input.dispatchEvent(new Event('input', { bubbles: true, cancelable: true, composed: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true, cancelable: true, composed: true }));
+        return true;
+      } catch (_e) {}
+    }
+  } catch (_e) {}
+  return false;
+};
+"""
+
+
 def _fill_known_fields(page, p: dict) -> int:
-    """Remplit les champs connus restés vides en s'appuyant sur leur LIBELLÉ
-    (question affichée) et non seulement sur les attributs. Renvoie le nb rempli."""
-    pairs = _field_values(p)
-    try:
-        metas = page.evaluate(_JS_LABELS)
-    except Exception:
-        metas = []
-    inputs = page.locator("input, textarea")
+    """Remplit les champs connus en traversant tous les Shadow Roots et Iframes."""
     filled = 0
-    for m in metas:
-        if not m.get("visible") or m.get("type") in ("hidden", "password", "file",
-                                                      "checkbox", "radio", "submit"):
-            continue
-        label = (m.get("label") or "").lower()
-        if not label:
-            continue
-        el = inputs.nth(m["idx"])
+    frames = getattr(page, "frames", [page])
+    for frame in frames:
         try:
-            if not el.is_visible() or not el.is_editable():
-                continue
-            if (el.input_value() or "").strip():
-                continue  # ne pas écraser
-            for pat, val in pairs:
-                if pat.search(label):
-                    try:
-                        el.evaluate(_JS_NATIVE_SET, val)
-                    except Exception:
-                        el.fill(val, timeout=3000)
-                    filled += 1
-                    break
-        except Exception:
-            continue
+            n = frame.evaluate(_JS_DEEP_FILL, p)
+            if isinstance(n, int):
+                filled += n
+        except Exception as exc:
+            log.debug("Frame fill error : %s", exc)
     return filled
 
 
@@ -423,15 +565,17 @@ def _candidate_brief(p: dict) -> str:
     for v in (skills.values() if isinstance(skills, dict) else []):
         if isinstance(v, list):
             flat += v
-    school = edu.get("school") or p.get("experience", {}).get("school") or "insa centre val de loire"
-    degree = edu.get("degree", "cybersécurité")
-    nat = pers.get("nationality", "Marocaine")
-    dates_edu = f"{edu.get('start_date', '01/09/2023')} au {edu.get('end_date', '01/05/2028')}"
+    school = edu.get("school") or p.get("experience", {}).get("school") or ""
+    degree = edu.get("degree") or p.get("experience", {}).get("education_level") or ""
+    nat = pers.get("nationality", "")
+    start = edu.get('start_date', '')
+    end = edu.get('end_date', '')
+    dates_edu = f"{start} au {end}" if (start or end) else ""
+    city = pers.get("city", "")
     objectif = (p.get("internship", {}).get("summary")
-                or "stage de 6 mois a partir d'avril 2027 en integration IT et "
-                   "cybersecurite, autour d'Active Directory / Entra ID")
+                or p.get("internship", {}).get("availability") or "")
     comp = ", ".join(flat[:25])
-    return (f"Nom: {pers.get('full_name')}. Nationalité: {nat}. Ecole: {school}. Diplôme: {degree} ({dates_edu}, en cours: Yes, lieu: bourges). "
+    return (f"Nom: {pers.get('full_name', '')}. Nationalité: {nat}. Ecole: {school}. Diplôme: {degree} ({dates_edu}, lieu: {city}). "
             f"Objectif: {objectif}. Competences cles: {comp}.")
 
 
@@ -595,37 +739,53 @@ def _fill_selects(page) -> int:
 
 
 def _upload_cv(page, cv_path: str) -> bool:
-    """Joint le CV au 1er champ fichier VIDE qui l'accepte. Essaie TOUS les
-    champs fichier (certains ATS, type SuccessFactors, cachent l'input derrière
-    un widget « + »). Idempotent : si un fichier y est déjà, on ne retéléverse
-    pas. S'arrête au premier upload réussi (pour ne pas joindre le CV au champ
-    « lettre de motivation » / « fichiers supplémentaires »)."""
+    """Joint le CV au premier champ fichier disponible (Playwright natif + fallback DataTransfer)."""
+    if not cv_path:
+        return False
+    p = Path(cv_path)
+    if not p.exists():
+        log.warning("Upload CV : fichier introuvable : %s", cv_path)
+        return False
+
+    abs_path = str(p.resolve())
+    frames = getattr(page, "frames", [page])
+
+    # 1. Méthode native Playwright sur tous les frames
+    for frame in frames:
+        try:
+            files = frame.locator("input[type='file']")
+            cnt = files.count()
+            for i in range(min(cnt, 6)):
+                el = files.nth(i)
+                try:
+                    already = el.evaluate("e => (e.files && e.files.length) ? e.files.length : 0")
+                    if already > 0:
+                        continue
+                    el.set_input_files(abs_path, timeout=3500)
+                    log.info("CV téléversé avec succès via Playwright sur champ %d (%s)", i, abs_path)
+                    return True
+                except Exception:
+                    continue
+        except Exception:
+            continue
+
+    # 2. Méthode DataTransfer via base64 (couvre dropzones et shadow roots)
     try:
-        files = page.locator("input[type='file']")
-        n = files.count()
-        if n == 0:
-            return False
-        any_already = False
-        for i in range(min(n, 6)):
-            el = files.nth(i)
+        import base64
+        b64 = base64.b64encode(p.read_bytes()).decode("ascii")
+        fname = p.name
+        for frame in frames:
             try:
-                already = el.evaluate(
-                    "e => (e.files && e.files.length) ? e.files.length : 0")
-            except Exception:
-                already = 0
-            if already and already > 0:
-                any_already = True
-                continue  # déjà un fichier sur ce champ
-            try:
-                # force=True : certains inputs fichier sont cachés derrière un widget.
-                el.set_input_files(cv_path, timeout=4000)
-                return True
+                attached = frame.evaluate(_JS_ATTACH_CV_BASE64, {"base64": b64, "filename": fname})
+                if attached:
+                    log.info("CV téléversé avec succès via DataTransfer base64 (%s)", fname)
+                    return True
             except Exception:
                 continue
-        return any_already  # True si un fichier était déjà joint quelque part
     except Exception as exc:
-        log.debug("Upload CV échoué : %s", exc)
-        return False
+        log.debug("Upload CV via DataTransfer échoué : %s", exc)
+
+    return False
 
 
 def _screenshot(page, offer: dict) -> str | None:
@@ -723,18 +883,86 @@ _FILL_BUTTON_JS = r"""
   b.id = '__ap_fill_btn';
   b.type = 'button';
   b.textContent = '📝 Compléter le formulaire';
-  b.style.cssText = 'position:fixed;top:10px;left:50%;transform:translateX(-50%);' +
-    'z-index:2147483647;background:#1F3A5F;color:#fff;border:none;padding:11px 20px;' +
-    'border-radius:10px;font-size:15px;font-weight:700;font-family:sans-serif;' +
-    'cursor:pointer;box-shadow:0 3px 12px rgba(0,0,0,.35)';
+  b.style.cssText = 'position:fixed;top:12px;left:50%;transform:translateX(-50%);' +
+    'z-index:2147483647;background:linear-gradient(135deg, #1F3A5F 0%, #0f172a 100%);' +
+    'color:#fff;border:1px solid rgba(255,255,255,0.3);padding:10px 22px;' +
+    'border-radius:24px;font-size:14px;font-weight:700;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;' +
+    'cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,.4);transition:all .15s ease;user-select:none;';
+
+  b.addEventListener('mouseenter', () => { b.style.transform = 'translateX(-50%) scale(1.03)'; });
+  b.addEventListener('mouseleave', () => { b.style.transform = 'translateX(-50%) scale(1)'; });
+
   b.addEventListener('click', (e) => {
     e.preventDefault();
+    e.stopPropagation();
     window.__ap_fill_ts = Date.now();
-    b.textContent = '⏳ Remplissage…';
+    b.textContent = '⏳ Remplissage en cours…';
+    b.style.background = '#312e81';
+
+    // Rétablissement automatique si réponse lente
+    setTimeout(() => {
+      if (b && b.textContent.includes('⏳')) {
+        b.textContent = '📝 Compléter le formulaire';
+        b.style.background = '#1F3A5F';
+      }
+    }, 6000);
   });
   document.body.appendChild(b);
 })();
 """
+
+
+def _run_fill_cycle(cur, prof: dict, offer: dict, cv_path: str | None, smart_seen: set) -> tuple[int, bool]:
+    """Exécute un cycle de remplissage complet sur la page active avec logging et retours clairs."""
+    log.info(">>> Déclenchement remplissage formulaire...")
+    if _has_captcha(cur):
+        _set_button_label(cur, "🧩 CAPTCHA : résous-le, puis reclique")
+        return 0, False
+    if _looks_like_login(cur.url, cur):
+        _set_button_label(cur, "🔒 Connecte-toi, puis reclique")
+        return 0, False
+    if not _form_present(cur):
+        log.info("Formulaire non présent directement : recherche du bouton Postuler...")
+        _trigger_apply(cur)
+
+    # 1. Champs texte et profil (traversée Shadow DOM complète)
+    n = _fill_known_fields(cur, prof)
+    log.info("Champs connus remplis : %d", n)
+
+    # 2. Menus déroulants courants
+    try:
+        n_sel = _fill_selects(cur)
+        n += n_sel
+        if n_sel > 0:
+            log.info("Menus déroulants remplis : %d", n_sel)
+    except Exception as exc:
+        log.debug("Erreur _fill_selects : %s", exc)
+
+    # 3. Questions spécifiques via Groq / LLM
+    try:
+        n_smart = _smart_fill(cur, offer, prof, smart_seen)
+        n += n_smart
+        if n_smart > 0:
+            log.info("Questions LLM remplies : %d", n_smart)
+    except Exception as exc:
+        log.debug("Erreur _smart_fill : %s", exc)
+
+    # 4. Upload du CV
+    up = False
+    if cv_path:
+        try:
+            up = _upload_cv(cur, cv_path)
+            log.info("Upload CV : %s", up)
+        except Exception as exc:
+            log.warning("Erreur upload CV : %s", exc)
+
+    if n > 0 or up:
+        cv_txt = " + 📄 CV joint" if up else ""
+        _set_button_label(cur, f"✅ {n} champ(s) rempli(s){cv_txt} — vérifie et envoie")
+    else:
+        _set_button_label(cur, "ℹ️ Formulaire déjà rempli ou aucun champ détecté")
+
+    return n, up
 
 
 def _set_button_label(page, text: str) -> None:
@@ -988,21 +1216,8 @@ def _apply_via_cdp(offer: dict, cv_path: str | None,
                         cur.evaluate("window.__ap_fill_done = window.__ap_fill_ts")
                     except Exception:
                         pass
-                    if _has_captcha(cur):
-                        _set_button_label(cur, "🧩 CAPTCHA : résous-le, puis reclique")
-                        continue
-                    if _looks_like_login(cur.url, cur):
-                        _set_button_label(cur, "🔒 Connecte-toi, puis reclique")
-                        continue
-                    if not _form_present(cur):
-                        _trigger_apply(cur)
-                    n = _fill_known_fields(cur, prof)
-                    n += _fill_selects(cur)
-                    n += _smart_fill(cur, offer, prof, smart_seen)
-                    up = bool(cv_path) and _upload_cv(cur, cv_path)
-                    _set_button_label(
-                        cur,
-                        f"✅ {n} champ(s) rempli(s){' + CV' if up else ''} — vérifie et envoie")
+                    _set_button_label(cur, "⏳ Remplissage en cours…")
+                    _run_fill_cycle(cur, prof, offer, cv_path, smart_seen)
                 except Exception:
                     continue
         except Exception as exc:

@@ -398,7 +398,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     (async () => {
       try {
         const url = msg.url || '';
-        const resp = await fetch(`http://localhost:8765/api/candidate?url=${encodeURIComponent(url)}`, {
+        const resp = await fetch(`http://127.0.0.1:8765/api/candidate?url=${encodeURIComponent(url)}`, {
           signal: AbortSignal.timeout(4000)
         });
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
@@ -415,7 +415,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     (async () => {
       try {
         const url = msg.url || '';
-        const resp = await fetch(`http://localhost:8765/api/get-cv?url=${encodeURIComponent(url)}`, {
+        const resp = await fetch(`http://127.0.0.1:8765/api/get-cv?url=${encodeURIComponent(url)}`, {
           signal: AbortSignal.timeout(8000)
         });
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
@@ -427,7 +427,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
         const base64 = btoa(binary);
         const disposition = resp.headers.get('Content-Disposition') || '';
-        let fileName = 'CV_Ali_Jamai.pdf';
+        let fileName = 'CV.pdf';
         const match = disposition.match(/filename="?([^"]+)"?/i);
         if (match) fileName = match[1];
         sendResponse({ ok: true, base64, fileName });
@@ -441,10 +441,33 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.action === 'smart_answer') {
     (async () => {
       try {
-        const resp = await fetch('http://localhost:8765/api/smart-answer', {
+        const resp = await fetch('http://127.0.0.1:8765/api/smart-answer', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ question: msg.question, job_title: msg.job_title }),
+          body: JSON.stringify({ question: msg.question, job_title: msg.job_title, max_length: msg.max_length || 0, page_url: msg.page_url || '' }),
+          signal: AbortSignal.timeout(28000)
+        });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const data = await resp.json();
+        sendResponse({ ok: true, data });
+      } catch (err) {
+        sendResponse({ ok: false, error: err.message });
+      }
+    })();
+    return true;
+  }
+
+  if (msg.action === 'smart_select') {
+    (async () => {
+      try {
+        const resp = await fetch('http://127.0.0.1:8765/api/smart-select', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            question: msg.question,
+            options: msg.options,
+            job_title: msg.job_title
+          }),
           signal: AbortSignal.timeout(10000)
         });
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
@@ -455,29 +478,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
     })();
     return true;
-  }
-
-  if (msg.action === 'smart_select') {
-    (async () => {
-      try {
-        const resp = await fetch('http://localhost:8765/api/smart-select', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            question: msg.question,
-            options: msg.options,
-            job_title: msg.job_title
-          }),
-          signal: AbortSignal.timeout(10000)
-        });
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        const data = await resp.json();
-        sendResponse({ ok: true, data });
-      } catch (err) {
-        sendResponse({ ok: false, error: err.message });
-      }
-    })();
-    return true;
   }
 
   if (msg.type === 'get-action-log') {

@@ -19,6 +19,7 @@ import logging
 import re
 import sqlite3
 import unicodedata
+from datetime import datetime, timezone
 from pathlib import Path
 
 from applypilot import config
@@ -113,6 +114,33 @@ def display_domaines(row: dict) -> str:
     except (ValueError, TypeError):
         return ""
     return str(doms[0]) if doms else ""
+
+
+def get_decided_job_keys(conn: sqlite3.Connection | None = None) -> set[tuple[str, str]]:
+    """Retourne l'ensemble des paires (_norm_key(titre), _norm_key(entreprise))
+    pour toutes les offres déjà décidées (applied, validated, ignored, skip_handicap)."""
+    if conn is None:
+        conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT title, company, site
+            FROM jobs
+            WHERE COALESCE(apply_status, '') IN ('applied', 'validated', 'ignored', 'skip_handicap')
+            """
+        ).fetchall()
+        keys: set[tuple[str, str]] = set()
+        for r in rows:
+            t = _norm_key(r[0])
+            c = _norm_key(r[1] or r[2])
+            if t:
+                keys.add((t, c))
+                if len(t) >= 25:
+                    keys.add((t, ""))
+        return keys
+    except Exception as exc:
+        log.warning("Impossible de récupérer les offres décidées : %s", exc)
+        return set()
 
 
 def _dedup_cross_source(rows: list[dict]) -> list[dict]:
@@ -253,6 +281,14 @@ def _matches_query(query: str | None, row: dict) -> bool:
     return False
 
 
+def _user_note_col(conn: sqlite3.Connection) -> str:
+    try:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+        return "user_note" if "user_note" in cols else "NULL AS user_note"
+    except Exception:
+        return "NULL AS user_note"
+
+
 def fetch_pending_offers(min_score: int = MIN_SCORE, limit: int = MAX_CARDS,
                          strategies: tuple[str, ...] = PENDING_STRATEGIES,
                          max_age_days: int | None = None,
@@ -278,11 +314,12 @@ def fetch_pending_offers(min_score: int = MIN_SCORE, limit: int = MAX_CARDS,
         placeholders = ", ".join("?" for _ in strats)
         strat_clause = f"AND strategy IN ({placeholders})"
         params.extend(strats)
+    unote = _user_note_col(conn)
     rows = conn.execute(
         f"""
         SELECT url, title, company, site, source, domaines, strategy, location,
                fit_score, score_reasoning, application_url,
-               tailored_resume_path, cover_letter_path, posted_at, user_note
+               tailored_resume_path, cover_letter_path, posted_at, {unote}
         FROM jobs
         WHERE fit_score IS NOT NULL
           AND fit_score >= ?
@@ -296,6 +333,13 @@ def fetch_pending_offers(min_score: int = MIN_SCORE, limit: int = MAX_CARDS,
         params,
     ).fetchall()
     dict_rows = [dict(r) for r in rows]
+    decided_keys = get_decided_job_keys(conn)
+    if decided_keys:
+        dict_rows = [
+            r for r in dict_rows
+            if (_norm_key(r.get("title")), _norm_key(display_company(r))) not in decided_keys
+            and (_norm_key(r.get("title")), "") not in decided_keys
+        ]
     # Filtrer par âge max (strictement <= 7 jours par défaut)
     max_days = _resolve_max_age_days(max_age_days)
     filtered = _filter_by_age(dict_rows, max_days)
@@ -331,11 +375,12 @@ def fetch_new_scan_offers(new_urls: list[str], min_score: int = MIN_SCORE,
     conn.row_factory = sqlite3.Row
     placeholders = ", ".join("?" for _ in new_urls)
     params: list = [min_score] + list(new_urls)
+    unote = _user_note_col(conn)
     rows = conn.execute(
         f"""
         SELECT url, title, company, site, source, domaines, strategy, location,
                fit_score, score_reasoning, application_url,
-               tailored_resume_path, cover_letter_path, posted_at, user_note
+               tailored_resume_path, cover_letter_path, posted_at, {unote}
         FROM jobs
         WHERE fit_score IS NOT NULL
           AND fit_score >= ?
@@ -348,6 +393,13 @@ def fetch_new_scan_offers(new_urls: list[str], min_score: int = MIN_SCORE,
         params,
     ).fetchall()
     dict_rows = [dict(r) for r in rows]
+    decided_keys = get_decided_job_keys(conn)
+    if decided_keys:
+        dict_rows = [
+            r for r in dict_rows
+            if (_norm_key(r.get("title")), _norm_key(display_company(r))) not in decided_keys
+            and (_norm_key(r.get("title")), "") not in decided_keys
+        ]
     filtered = _filter_by_age(dict_rows, 7)
     sorted_rows = _sort_offers_by_freshness(filtered)
     deduped = _dedup_cross_source(sorted_rows)
@@ -361,9 +413,14 @@ def fetch_new_scan_offers(new_urls: list[str], min_score: int = MIN_SCORE,
 def fetch_one(url: str) -> dict | None:
     conn = get_connection()
     conn.row_factory = sqlite3.Row
+    unote = _user_note_col(conn)
     r = conn.execute(
-        """SELECT url, title, company, site, location, fit_score, score_reasoning,
-                  application_url, tailored_resume_path, cover_letter_path, apply_status, user_note
+        # description / full_description : indispensables au choix du CV de réserve
+        # (branche de l'offre) et à la détection des éléments à y ajouter. Sans
+        # elles, le bot ne voyait que l'intitulé et envoyait le CV générique tel quel.
+        f"""SELECT url, title, company, site, location, fit_score, score_reasoning,
+                  description, full_description,
+                  application_url, tailored_resume_path, cover_letter_path, apply_status, {unote}
            FROM jobs WHERE url = ?""",
         (url,),
     ).fetchone()
@@ -372,10 +429,42 @@ def fetch_one(url: str) -> dict | None:
 
 def set_apply_status(url: str, status: str, note: str | None = None) -> None:
     """Enregistre une décision utilisateur et reflète l'état dans la machine à
-    états. `status` ∈ {validated, ignored, edit_requested}."""
+    états. `status` ∈ {validated, ignored, edit_requested, applied, prepared}."""
     conn = get_connection()
-    if note is not None:
-        execute_write(conn, "UPDATE jobs SET apply_status = ?, user_note = ? WHERE url = ?", (status, note, url))
+    conn.row_factory = sqlite3.Row
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # Si l'offre n'est pas encore dans la table jobs (ex: job étudiant ouvert directement), la créer
+    existing_row = fetch_one(url)
+    if not existing_row:
+        st_job = _load_student_jobs().get(url) or {}
+        st_title = st_job.get("title") or "Job étudiant / intérim"
+        st_emp = st_job.get("employer") or ""
+        mark_student_job(url, title=st_title, employer=st_emp)
+
+    # Mettre à jour student_jobs.json si présent
+    try:
+        sd = _load_student_jobs()
+        jk = extract_indeed_jk(url)
+        keys_to_update = [k for k in [url, f"jk:{jk}" if jk else None] if k and k in sd]
+        if keys_to_update:
+            for k in keys_to_update:
+                sd[k]["apply_status"] = status
+                if status == "applied":
+                    sd[k]["applied_at"] = now_iso
+            _STUDENT_JOBS_PATH.write_text(json.dumps(sd, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+    if status == "applied":
+        if note is not None and _user_note_col(conn) == "user_note":
+            execute_write(conn, "UPDATE jobs SET apply_status = ?, applied_at = ?, user_note = ? WHERE url = ?", (status, now_iso, note, url))
+        else:
+            execute_write(conn, "UPDATE jobs SET apply_status = ?, applied_at = ? WHERE url = ?", (status, now_iso, url))
+    elif note is not None:
+        if _user_note_col(conn) == "user_note":
+            execute_write(conn, "UPDATE jobs SET apply_status = ?, user_note = ? WHERE url = ?", (status, note, url))
+        else:
+            execute_write(conn, "UPDATE jobs SET apply_status = ? WHERE url = ?", (status, url))
     else:
         execute_write(conn, "UPDATE jobs SET apply_status = ? WHERE url = ?", (status, url))
     to_state = {"validated": "ready_to_apply", "ignored": "archived",
@@ -387,6 +476,36 @@ def set_apply_status(url: str, status: str, note: str | None = None) -> None:
                              force=True, commit=True)
         except Exception as exc:  # transition non bloquante
             log.debug("transition_state ignorée pour %s : %s", url, exc)
+
+    # Propagation automatique aux doublons (même titre et entreprise)
+    if status in ("applied", "ignored"):
+        try:
+            cur_job = fetch_one(url)
+            if cur_job and cur_job.get("title"):
+                norm_t = _norm_key(cur_job.get("title"))
+                norm_c = _norm_key(display_company(cur_job))
+                all_sim = conn.execute(
+                    "SELECT url, title, company, site FROM jobs WHERE url <> ? AND COALESCE(apply_status, '') <> ?",
+                    (url, status),
+                ).fetchall()
+                for r in all_sim:
+                    if _norm_key(r["title"]) == norm_t:
+                        other_c = _norm_key(display_company(dict(r)))
+                        if not norm_c or not other_c or norm_c == other_c:
+                            other_url = r["url"]
+                            if status == "applied":
+                                execute_write(conn, "UPDATE jobs SET apply_status = ?, applied_at = ? WHERE url = ?", (status, now_iso, other_url))
+                            else:
+                                execute_write(conn, "UPDATE jobs SET apply_status = ? WHERE url = ?", (status, other_url))
+                            if to_state:
+                                try:
+                                    transition_state(conn, other_url, to_state,
+                                                     reason=f"bot:duplicate_{status}_of:{url}",
+                                                     force=True, commit=True)
+                                except Exception:
+                                    pass
+        except Exception as exc:
+            log.debug("Propagation doublon échouée pour %s : %s", url, exc)
 
 
 _NOTIFIED_PATH = config.APP_DIR / "notified_offers.json"
@@ -421,10 +540,13 @@ def _load_cards() -> dict[str, int]:
 
 
 def set_card_message(url: str, message_id: int) -> None:
-    """Associe l'offre (par hash) au message Telegram qui l'affiche, pour
+    """Associe l'offre (par hash et par jk Indeed) au message Telegram qui l'affiche, pour
     pouvoir le supprimer du fil après décision."""
     d = _load_cards()
     d[url_hash(url)] = int(message_id)
+    jk = extract_indeed_jk(url)
+    if jk:
+        d[f"jk:{jk}"] = int(message_id)
     try:
         _CARDS_PATH.write_text(json.dumps(d), encoding="utf-8")
     except OSError as exc:
@@ -432,18 +554,206 @@ def set_card_message(url: str, message_id: int) -> None:
 
 
 def get_card_message(url: str) -> int | None:
-    return _load_cards().get(url_hash(url))
+    d = _load_cards()
+    res = d.get(url_hash(url))
+    if not res:
+        jk = extract_indeed_jk(url)
+        if jk:
+            res = d.get(f"jk:{jk}")
+    return res
+
+
+def is_job_decided(url: str, title: str = "", employer: str = "") -> bool:
+    """Vrai si l'offre a déjà été postulée ou ignorée."""
+    if not url:
+        return False
+
+    # 1. Vérification dans student_jobs.json
+    try:
+        sd = _load_student_jobs()
+        jk = extract_indeed_jk(url)
+        keys_to_check = [url]
+        if jk:
+            keys_to_check.append(f"jk:{jk}")
+        for k in keys_to_check:
+            if k in sd and sd[k].get("apply_status") in ("applied", "ignored"):
+                return True
+    except Exception:
+        pass
+
+    # 2. Vérification dans la table jobs
+    try:
+        row = fetch_one(url)
+        if row and (row.get("apply_status") in ("applied", "ignored") or row.get("state") in ("applied", "archived")):
+            return True
+    except Exception:
+        pass
+
+    # 3. Vérification par (titre, entreprise) si fournis
+    if title:
+        try:
+            conn = get_connection()
+            decided_keys = get_decided_job_keys(conn)
+            tk = _norm_key(title)
+            ck = _norm_key(employer)
+            if (tk, ck) in decided_keys or (len(tk) >= 25 and (tk, "") in decided_keys):
+                return True
+        except Exception:
+            pass
+
+    return False
 
 
 _LAST_PREPARED = config.APP_DIR / "last_prepared.txt"
+_LAST_PREPARED_CV = config.APP_DIR / "last_prepared_cv.txt"
+_LAST_PREPARED_TYPE = config.APP_DIR / "last_prepared_type.txt"
+_LAST_PREPARED_TIME = config.APP_DIR / "last_prepared_time.txt"
+_STUDENT_JOBS_PATH = config.APP_DIR / "student_jobs.json"
+
+STUDENT_KEYWORDS = (
+    "equipier", "équipier", "caissier", "caissière", "vendeur", "vendeuse",
+    "manutentionnaire", "magasinier", "conditionnement", "restauration",
+    "fast food", "fast-food", "hote de caisse", "hôte de caisse", "plongeur",
+    "inventoriste", "preparateur de commande", "préparateur de commande",
+    "livreur", "serveur", "serveuse", "job etudiant", "job étudiant",
+    "etudiant", "étudiant", "interim", "intérim", "aide cuisine", "commis",
+    "employe polyvalent", "employé polyvalent", "mcdo", "mcdonald", "burger king",
+    "kfc", "leclerc", "carrefour", "lidl", "auchan", "intermarche", "intermarché",
+    "rayon", "mise en rayon", "reassort", "réassort"
+)
 
 
-def set_last_prepared(url: str) -> None:
-    """Mémorise la dernière offre pour laquelle on a cliqué « Préparer »."""
+def extract_indeed_jk(url: str | None) -> str | None:
+    """Extrait le job key Indeed (jk) d'une URL."""
+    if not url:
+        return None
+    m = re.search(r"[?&]jk=([a-zA-Z0-9_-]+)", url)
+    if m:
+        return m.group(1).lower()
+    m = re.search(r"/(?:setup|form|viewjob|clk)/([a-f0-9]{16})", url, re.I)
+    if m:
+        return m.group(1).lower()
+    m = re.search(r"([a-f0-9]{16})", url)
+    if m:
+        return m.group(1).lower()
+    return None
+
+
+def matches_student_keywords(text: str | None) -> bool:
+    """Vrai si le texte contient des termes typiques d'un job étudiant / intérim."""
+    if not text:
+        return False
+    t = text.lower()
+    return any(k in t for k in STUDENT_KEYWORDS)
+
+
+def _load_student_jobs() -> dict:
+    try:
+        return json.loads(_STUDENT_JOBS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def mark_student_job(url: str, title: str = "", employer: str = "") -> None:
+    """Enregistre une offre comme job étudiant / intérim pour l'extension et le traceur."""
+    if not url:
+        return
+    import time as _time
+    d = _load_student_jobs()
+    jk = extract_indeed_jk(url)
+    cv_path = str(config.APP_DIR / "cv_job_etudiant.pdf")
+
+    # Préserver le titre et l'employeur existants si les arguments sont vides
+    existing = d.get(url) or (d.get(f"jk:{jk}") if jk else {}) or {}
+    title = title or existing.get("title", "")
+    employer = employer or existing.get("employer", "")
+
+    entry = {
+        "url": url,
+        "title": title,
+        "employer": employer,
+        "jk": jk,
+        "time": _time.time(),
+        "cv": cv_path,
+    }
+    d[url] = entry
+    if jk:
+        d[f"jk:{jk}"] = entry
+    try:
+        _STUDENT_JOBS_PATH.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError as exc:
+        log.warning("Impossible d'écrire %s : %s", _STUDENT_JOBS_PATH, exc)
+
+    # Enregistrement dans la table jobs (upsert)
+    try:
+        conn = get_connection()
+        now_iso = datetime.now(timezone.utc).isoformat()
+        execute_write(
+            conn,
+            """
+            INSERT INTO jobs (url, title, company, site, tailored_resume_path, apply_status, category, discovered_at)
+            VALUES (?, ?, ?, 'indeed_student', ?, 'ready_to_apply', 'job_etudiant', ?)
+            ON CONFLICT(url) DO UPDATE SET
+                title = CASE WHEN excluded.title != '' AND excluded.title != 'Job étudiant / intérim' THEN excluded.title ELSE jobs.title END,
+                company = CASE WHEN excluded.company != '' THEN excluded.company ELSE jobs.company END,
+                tailored_resume_path = excluded.tailored_resume_path,
+                category = 'job_etudiant'
+            """,
+            (url, title or "Job étudiant / intérim", employer, cv_path, now_iso),
+        )
+    except Exception as exc:
+        log.warning("Enregistrement job étudiant dans jobs.db : %s", exc)
+
+
+def is_student_job(url: str | None) -> bool:
+    """Vrai si l'URL ou l'offre correspond à un job étudiant / intérim."""
+    if not url:
+        return get_last_prepared_type() == "student"
+
+    d = _load_student_jobs()
+    if url in d:
+        return True
+
+    jk = extract_indeed_jk(url)
+    if jk and f"jk:{jk}" in d:
+        return True
+
+    if matches_student_keywords(url):
+        return True
+
+    # Vérification en base jobs
+    try:
+        row = fetch_one(url)
+        if row:
+            if row.get("category") == "job_etudiant" or row.get("site") in ("indeed_student", "indeed_interim"):
+                return True
+            if "cv_job_etudiant" in str(row.get("tailored_resume_path") or ""):
+                return True
+            if matches_student_keywords(row.get("title")):
+                return True
+    except Exception:
+        pass
+
+    # Si la dernière offre préparée il y a moins de 45 min était un job étudiant
+    if get_last_prepared_type() == "student":
+        import time as _time
+        if _time.time() - get_last_prepared_time() < 2700:
+            return True
+
+    return False
+
+
+def set_last_prepared(url: str, cv_path: str | None = None, job_type: str = "stage") -> None:
+    """Mémorise la dernière offre pour laquelle on a cliqué « Préparer » ou « Postuler »."""
+    import time as _time
     try:
         _LAST_PREPARED.write_text(url, encoding="utf-8")
+        _LAST_PREPARED_TYPE.write_text(job_type, encoding="utf-8")
+        _LAST_PREPARED_TIME.write_text(str(_time.time()), encoding="utf-8")
+        if cv_path:
+            _LAST_PREPARED_CV.write_text(str(cv_path), encoding="utf-8")
     except OSError as exc:
-        log.warning("Impossible d'écrire %s : %s", _LAST_PREPARED, exc)
+        log.warning("Impossible d'écrire l'état de préparation : %s", exc)
 
 
 def get_last_prepared() -> str | None:
@@ -451,6 +761,32 @@ def get_last_prepared() -> str | None:
         return (_LAST_PREPARED.read_text(encoding="utf-8").strip() or None)
     except OSError:
         return None
+
+
+def get_last_prepared_cv() -> Path | None:
+    try:
+        txt = (_LAST_PREPARED_CV.read_text(encoding="utf-8").strip() or None)
+        if txt:
+            p = Path(txt)
+            if p.exists():
+                return p
+    except OSError:
+        pass
+    return None
+
+
+def get_last_prepared_type() -> str:
+    try:
+        return (_LAST_PREPARED_TYPE.read_text(encoding="utf-8").strip() or "stage")
+    except OSError:
+        return "stage"
+
+
+def get_last_prepared_time() -> float:
+    try:
+        return float(_LAST_PREPARED_TIME.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return 0.0
 
 
 def set_cv_path(url: str, pdf_path: str) -> None:
@@ -473,3 +809,142 @@ def attachment_paths(row: dict) -> list[Path]:
         if chosen:
             out.append(chosen)
     return out
+
+
+def parse_date_to_paris(raw: str | None) -> datetime | None:
+    """Convertit une date brute (ISO, RFC 2822, email) en datetime dans le fuseau Europe/Paris."""
+    if not raw:
+        return None
+    import email.utils
+    import zoneinfo
+    dt = None
+    try:
+        dt = email.utils.parsedate_to_datetime(raw)
+    except Exception:
+        pass
+    if dt is None:
+        try:
+            clean_raw = str(raw).replace("Z", "+00:00")
+            dt = datetime.fromisoformat(clean_raw)
+        except Exception:
+            pass
+    if dt is not None:
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        paris_tz = zoneinfo.ZoneInfo("Europe/Paris")
+        return dt.astimezone(paris_tz)
+    return None
+
+
+def get_application_counts() -> dict:
+    """Calcule le nombre de candidatures envoyées aujourd'hui et au total
+    (fuseau Europe/Paris), avec le détail des offres du jour et l'historique récent."""
+    import zoneinfo
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    paris_tz = zoneinfo.ZoneInfo("Europe/Paris")
+    today = datetime.now(paris_tz).date()
+
+    # Dates de transition pour les offres dont applied_at était NULL
+    trans_dates = {}
+    try:
+        for tr in conn.execute(
+            "SELECT job_url, at FROM job_state_transitions WHERE to_state = 'applied' ORDER BY at ASC"
+        ).fetchall():
+            trans_dates[tr["job_url"]] = tr["at"]
+    except Exception:
+        pass
+
+    rows = conn.execute("""
+        SELECT url, title, company, site, apply_status, applied_at, state, discovered_at
+        FROM jobs
+        WHERE applied_at IS NOT NULL OR apply_status = 'applied' OR state = 'applied'
+    """).fetchall()
+
+    total_count = len(rows)
+    today_jobs = []
+    daily_counts: dict[str, int] = {}
+
+    for r in rows:
+        raw_dt = r["applied_at"] or trans_dates.get(r["url"]) or r["discovered_at"]
+        dt = parse_date_to_paris(raw_dt)
+        if dt:
+            d = dt.date()
+            d_str = d.isoformat()
+            daily_counts[d_str] = daily_counts.get(d_str, 0) + 1
+            if d == today:
+                row_dict = dict(r)
+                comp = display_company(row_dict)
+                if not comp or comp.lower() == "manual":
+                    comp = (r["company"] or "").strip()
+                if not comp or comp.lower() == "manual":
+                    comp = (r["site"] or "").strip()
+                if not comp or comp.lower() == "manual":
+                    comp = "Candidature"
+                today_jobs.append({
+                    "title": (r["title"] or "Poste non spécifié").strip(),
+                    "company": comp,
+                    "time": dt.strftime("%H:%M"),
+                    "dt": dt,
+                })
+
+    today_jobs.sort(key=lambda x: x["dt"], reverse=True)
+    return {
+        "today_count": len(today_jobs),
+        "total_count": total_count,
+        "today_jobs": today_jobs,
+        "daily_counts": daily_counts,
+    }
+
+
+def get_all_applied_jobs() -> list[dict]:
+    """Renvoie la liste complète de toutes les candidatures envoyées,
+    triées de la plus récente à la plus ancienne."""
+    import zoneinfo
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    paris_tz = zoneinfo.ZoneInfo("Europe/Paris")
+    today = datetime.now(paris_tz).date()
+
+    trans_dates = {}
+    try:
+        for tr in conn.execute(
+            "SELECT job_url, at FROM job_state_transitions WHERE to_state = 'applied' ORDER BY at ASC"
+        ).fetchall():
+            trans_dates[tr["job_url"]] = tr["at"]
+    except Exception:
+        pass
+
+    rows = conn.execute("""
+        SELECT url, title, company, site, apply_status, applied_at, state, discovered_at
+        FROM jobs
+        WHERE applied_at IS NOT NULL OR apply_status = 'applied' OR state = 'applied'
+    """).fetchall()
+
+    all_jobs = []
+    for r in rows:
+        raw_dt = r["applied_at"] or trans_dates.get(r["url"]) or r["discovered_at"]
+        dt = parse_date_to_paris(raw_dt)
+        row_dict = dict(r)
+        comp = display_company(row_dict)
+        if not comp or comp.lower() == "manual":
+            comp = (r["company"] or "").strip()
+        if not comp or comp.lower() == "manual":
+            comp = (r["site"] or "").strip()
+        if not comp or comp.lower() == "manual":
+            comp = "Entreprise"
+
+        is_today = (dt.date() == today) if dt else False
+        all_jobs.append({
+            "url": r["url"] or "",
+            "title": (r["title"] or "Poste non spécifié").strip(),
+            "company": comp,
+            "dt": dt,
+            "time": dt.strftime("%H:%M") if dt else "--:--",
+            "date": dt.strftime("%d/%m/%Y") if dt else "",
+            "date_short": dt.strftime("%d/%m") if dt else "",
+            "is_today": is_today,
+        })
+
+    all_jobs.sort(key=lambda x: (x["dt"] is not None, x["dt"]), reverse=True)
+    return all_jobs

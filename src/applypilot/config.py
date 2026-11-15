@@ -66,6 +66,28 @@ CONFIG_DIR = PACKAGE_DIR / "config"
 TRACER_PORT = int(os.environ.get("TRACER_PORT", "8765"))
 TRACER_HOST = os.environ.get("TRACER_HOST", "0.0.0.0")
 TRACER_BASE_URL = os.environ.get("TRACER_BASE_URL", f"http://localhost:{TRACER_PORT}").rstrip("/")
+# Clé partagée avec le traceur hébergé (Cloudflare Worker). Vide = serveur local/auto-hébergé.
+TRACER_API_KEY = os.environ.get("TRACER_API_KEY", "").strip()
+
+
+def _refresh_tracer_settings() -> None:
+    """Relit les réglages du traceur dans l'environnement. Ils sont lus une
+    première fois à l'import, AVANT le chargement de ~/.applypilot/.env : sans
+    cette relecture, un TRACER_BASE_URL écrit dans .env n'aurait aucun effet."""
+    global TRACER_PORT, TRACER_HOST, TRACER_BASE_URL, TRACER_API_KEY
+    TRACER_PORT = int(os.environ.get("TRACER_PORT", "8765"))
+    TRACER_HOST = os.environ.get("TRACER_HOST", "0.0.0.0")
+    TRACER_BASE_URL = os.environ.get("TRACER_BASE_URL", f"http://localhost:{TRACER_PORT}").rstrip("/")
+    TRACER_API_KEY = os.environ.get("TRACER_API_KEY", "").strip()
+
+
+def tracer_is_public() -> bool:
+    """Vrai si les liens traceurs sont joignables par un recruteur : adresse HTTPS
+    publique. Une adresse locale ne doit JAMAIS finir dans un CV (lien mort pour
+    le recruteur, et motif de rejet par les scanners des portails)."""
+    base = TRACER_BASE_URL.lower()
+    return base.startswith("https://") and not any(
+        h in base for h in ("localhost", "127.0.0.1", "0.0.0.0", "::1", "192.168.", "10.", "172."))
 
 
 def get_chrome_path() -> str:
@@ -242,6 +264,7 @@ def load_env():
         load_dotenv(ENV_PATH)
     # Also try CWD .env as fallback
     load_dotenv()
+    _refresh_tracer_settings()
 
 
 # ---------------------------------------------------------------------------

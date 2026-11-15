@@ -19,6 +19,51 @@ import pytest
 _seed_counter = [0]
 
 
+@pytest.fixture(autouse=True)
+def _no_real_tracer(monkeypatch):
+    """Aucun test ne doit parler au vrai traceur hébergé ni hériter de son adresse.
+
+    Une fois le Worker déployé, ~/.applypilot/.env contient une adresse publique
+    et une clé : un test qui chargerait ce fichier déclarerait de faux liens chez
+    Cloudflare. Les variables sont donc figées (load_dotenv n'écrase pas une
+    variable déjà définie) et tout appel réseau du client lève une erreur.
+    """
+    from applypilot import config
+    from applypilot.tracking import remote
+
+    monkeypatch.setenv("TRACER_BASE_URL", "http://localhost:8765")
+    monkeypatch.setenv("TRACER_API_KEY", "")
+    monkeypatch.setattr(config, "TRACER_BASE_URL", "http://localhost:8765")
+    monkeypatch.setattr(config, "TRACER_API_KEY", "")
+
+    def no_network(*args, **kwargs):
+        raise AssertionError("appel réseau au traceur hébergé pendant un test")
+    monkeypatch.setattr(remote, "_request", no_network)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_cv_dir(tmp_path_factory, monkeypatch):
+    """Redirige le dossier de compilation des CV vers un dossier temporaire.
+
+    Sans cela, tout test qui appelle ``generate_cv`` écrase les vrais CV de
+    ``~/.applypilot/cv_latex`` (ceux liés aux offres en base) par une version
+    de test. La photo réelle est copiée pour que la mise en page — et donc la
+    contrainte « 1 page » — reste représentative.
+    """
+    import shutil
+
+    from applypilot import cv_latex
+
+    real_dir = cv_latex.CV_LATEX_DIR
+    tmp_dir = tmp_path_factory.mktemp("cv_latex")
+    photo = real_dir / cv_latex.PHOTO_REL
+    if photo.exists():
+        (tmp_dir / cv_latex.PHOTO_REL).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(photo, tmp_dir / cv_latex.PHOTO_REL)
+    monkeypatch.setattr(cv_latex, "CV_LATEX_DIR", tmp_dir)
+    yield tmp_dir
+
+
 @pytest.fixture
 def tmp_db(tmp_path, monkeypatch):
     """Yield a factory that returns a fresh sqlite3.Connection backed by a tmp file.

@@ -1,0 +1,21 @@
+# Traceur de liens de CV d'ApplyPilot — configuration Cloudflare Workers.
+# Déploiement : .\deploy\deploy_tracer_worker.ps1 (crée l'espace KV, pose les secrets, déploie).
+name = "applypilot-suivi"
+main = "worker.js"
+compatibility_date = "2026-01-01"
+workers_dev = true
+
+# Pages vers lesquelles les liens redirigent (liens permanents /t/linkedin, /t/github, /t/portfolio).
+[vars]
+LINKEDIN_URL = "https://www.linkedin.com/in/ali-jamai-078602297"
+GITHUB_URL = "https://github.com/JamaiAli"
+PORTFOLIO_URL = "https://jamaiali.github.io"
+
+# Espace KV « TRACKERS » : liens déclarés par le bot + clics reçus. Cet identifiant
+# n'est pas un secret (il ne donne aucun accès sans être connecté au compte).
+[[kv_namespaces]]
+binding = "TRACKERS"
+id = "55ff263b89614326a65df57548a92548"
+
+# Les secrets API_KEY, TELEGRAM_BOT_TOKEN et TELEGRAM_USER_ID ne sont jamais écrits
+# dans ce fichier : ils sont posés par « wrangler secret bulk ».

@@ -1,460 +1,417 @@
-<!-- logo here -->
+# ApplyPilot (ApplyBot) 🇫🇷
 
-> **⚠️ ApplyPilot** is the original open-source project, created by [Pickle-Pixel](https://github.com/Pickle-Pixel) and first published on GitHub on **February 17, 2026**. We are **not affiliated** with applypilot.app, useapplypilot.com, or any other product using the "ApplyPilot" name. These sites are **not associated with this project** and may misrepresent what they offer. If you're looking for the autonomous, open-source job application agent — you're in the right place.
-
-# ApplyPilot
-
-**Applied to 1,000 jobs in 2 days. Fully autonomous. Open source.**
-
-[![PyPI version](https://img.shields.io/pypi/v/applypilot?color=blue)](https://pypi.org/project/applypilot/)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
-[![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-green.svg)](LICENSE)
-[![GitHub stars](https://img.shields.io/github/stars/ibarrajo/ApplyPilot?style=social)](https://github.com/ibarrajo/ApplyPilot)
-
-> **Forked from [Pickle-Pixel/ApplyPilot](https://github.com/Pickle-Pixel/ApplyPilot)** — this fork adds multi-provider LLM fallback, human-in-the-loop apply, Gmail tracking, a Q&A knowledge base, ATS session persistence, and significant pipeline hardening. Thank you to the original authors for the foundation.
-
-
-
-
-https://github.com/user-attachments/assets/7ee3417f-43d4-4245-9952-35df1e77f2df
-
+> **L'assistant intelligent et transparent de recherche de stage, d'alternance et de job étudiant.**  
+> Veille automatique sur **HelloWork** et **Indeed**, génération de **CV sur-mesure d'une seule page (LaTeX / PDF)**, préremplissage automatique des formulaires via extension Chrome, et pilotage complet depuis **Telegram**.
 
 ---
 
-## What It Does
+### 🛡️ Le principe fondamental : 100 % tes données, 0 % d'invention
 
-ApplyPilot is a 7-stage autonomous job application pipeline. It discovers jobs across 6+ boards, scores them against your resume with AI, tailors your resume per job, writes cover letters, submits applications, and then monitors your inbox for responses — all without you lifting a finger.
+* **Zéro invention** : Le moteur de CV ne prend ses faits que dans **un seul fichier : le tien** (`~/.applypilot/experiences.json`). Le modèle de langage (LLM) sélectionne et ordonne tes expériences les plus adaptées à chaque offre, mais **recopie tes puces de réalisations mot pour mot**. Si une compétence n'est pas dans ton catalogue, elle n'apparaîtra sur aucun CV.
+* **Zéro fuite d'informations** : Le code est totalement découplé de l'auteur d'origine. Avec tes propres fichiers de configuration, **seules tes données** (nom, école, ville, projets, liens) apparaissent sur tes CV et formulaires.
+* **Tu gardes toujours la main** : L'extension préremplit le formulaire et attache ton CV sur-mesure, mais **ne clique jamais sur « Envoyer »**. C'est toi qui relis et valides chaque candidature.
 
-Three commands. That's it.
+---
 
-```bash
-pip install applypilot
-pip install --no-deps python-jobspy    # separate install (broken numpy pin in metadata)
-pip install pydantic tls-client requests markdownify regex  # jobspy runtime deps
-applypilot init          # one-time setup: resume, profile, preferences, API keys
-applypilot run           # discover > enrich > score > tailor > cover letters
-applypilot apply         # autonomous browser-driven submission
-applypilot track         # scan Gmail for responses and surface action items
+## Sommaire
+
+1. [Ce qu'il te faut (Prérequis)](#1-ce-quil-te-faut-prérequis)
+2. [Installation en 5 minutes](#2-installation-en-5-minutes)
+3. [Configuration de TON profil (Tes infos à toi)](#3-configuration-de-ton-profil-tes-infos-à-toi)
+   - [3.1 Tes clés d'API (`.env`)](#31-tes-clés-dapi-env)
+   - [3.2 Ton catalogue d'expériences (`experiences.json`)](#32-ton-catalogue-dexpériences-experiencesjson)
+   - [3.3 Ton profil de formulaires (`profile.json`)](#33-ton-profil-de-formulaires-profilejson)
+   - [3.4 Tes mots-clés de veille (`searches.yaml`)](#34-tes-mots-clés-de-veille-searchesyaml)
+   - [3.5 Ton CV pour les jobs étudiants (`cv_job_etudiant.json`) *(facultatif)*](#35-ton-cv-pour-les-jobs-étudiants-cv_job_etudiantjson-facultatif)
+   - [3.6 Ta photo d'identité *(facultatif)*](#36-ta-photo-didentité-facultatif)
+4. [Génération & Réserve de CV sur-mesure](#4-génération--réserve-de-cv-sur-mesure)
+5. [Le Bot Telegram au quotidien](#5-le-bot-telegram-au-quotidien)
+6. [L'Extension Chrome d'auto-remplissage](#6-lextension-chrome-dauto-remplissage)
+7. [Suivi des consultations de ton CV *(facultatif)*](#7-suivi-des-consultations-de-ton-cv-facultatif)
+8. [Personnaliser les branches à ton métier](#8-personnaliser-les-branches-à-ton-métier)
+9. [Dépannage & FAQ](#9-dépannage--faq)
+
+---
+
+## 1. Ce qu'il te faut (Prérequis)
+
+| Outil | Rôle | Gratuit ? | Obligatoire |
+|---|---|---|---|
+| **Python 3.11+** | Moteur d'ApplyPilot | Oui | **Oui** |
+| **MiKTeX** (Windows) ou **TeX Live** (Linux/Mac) | Fournit `pdflatex` pour compiler les CV en PDF haute qualité | Oui | **Oui** |
+| **Clé API LLM (Groq)** | Analyse les offres et oriente les CV (Llama 3.3 70B ultra-rapide) | Oui (sans CB) | **Oui** |
+| **Bot Telegram** | Piloter l'outil, recevoir les offres et CV sur ton téléphone | Oui | Recommandé |
+| **Google Chrome** | Utiliser l'extension de préremplissage automatique | Oui | Facultatif |
+
+> [!NOTE]
+> Le projet est optimisé et testé sous **Windows 11 avec PowerShell**, mais fonctionne également sous Linux et macOS.
+
+---
+
+## 2. Installation en 5 minutes
+
+Ouvre un terminal **PowerShell** dans ton dossier de travail :
+
+```powershell
+# 1. Cloner le dépôt
+git clone https://github.com/JamaiAli/applybot.git
+cd applybot
+
+# 2. Créer et activer l'environnement virtuel Python
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.\.venv\Scripts\python.exe -m pip install pymupdf
 ```
 
----
+Vérifie que Python et LaTeX fonctionnent correctement :
 
-## Two Paths
-
-### Full Pipeline (recommended)
-**Requires:** Python 3.11+, Node.js (for npx), Gemini API key (free), Claude Code CLI, Chrome
-
-Runs all stages end-to-end: job discovery through autonomous application submission and response tracking.
-
-### Discovery + Tailoring Only
-**Requires:** Python 3.11+, Gemini API key (free)
-
-Runs stages 1–5: discovers jobs, scores them, tailors your resume, generates cover letters. You submit applications manually with the AI-prepared materials.
-
----
-
-## The Pipeline
-
-| Stage | What Happens |
-|-------|-------------|
-| **1. Discover** | Scrapes 5 job boards (Indeed, LinkedIn, Glassdoor, ZipRecruiter, Google Jobs) + Hacker News Who's Hiring + 48 Workday employer portals + 30 direct career sites |
-| **2. Enrich** | Fetches full job descriptions via JSON-LD, CSS selectors, or AI-powered extraction. Retries failed fetches with exponential backoff by error category |
-| **3. Score** | AI rates every job 1–10 against your resume and preferences. Only high-fit jobs proceed. Failed scores retry with backoff instead of writing a 0 |
-| **4. Tailor** | AI rewrites your resume per job: reorganizes, emphasizes relevant experience, adds keywords. `resume_facts` (companies, metrics, projects) are preserved exactly — never fabricated |
-| **5. Cover Letter** | AI generates a targeted cover letter per job referencing the specific company, role, and your relevant experience |
-| **6. Auto-Apply** | Claude Code navigates application forms, fills fields, uploads documents, answers screening questions, and submits. Per-worker Chrome instances with ATS session persistence |
-| **7. Track** | Scans Gmail for responses, classifies emails (rejection / interview / ghosting), surfaces action items, and flags jobs with no response after N days |
-
-Each stage is independent. Run them all or pick what you need.
-
----
-
-## ApplyPilot vs The Alternatives
-
-| Feature | ApplyPilot | AIHawk | Manual |
-|---------|-----------|--------|--------|
-| Job discovery | 5 boards + HN + Workday + direct sites | LinkedIn only | One board at a time |
-| AI scoring | 1–10 fit score per job | Basic filtering | Your gut feeling |
-| Resume tailoring | Per-job AI rewrite | Template-based | Hours per application |
-| Auto-apply | Full form navigation + submission | LinkedIn Easy Apply only | Click, type, repeat |
-| Human-in-the-loop | HITL pauses for login walls, CAPTCHAs, screening Q&A | None | Always |
-| Response tracking | Gmail scanning + classification | None | Manual inbox triage |
-| LLM fallback | Gemini → OpenAI → Claude cascade | Single provider | N/A |
-| License | AGPL-3.0 | MIT | N/A |
-
----
-
-## Requirements
-
-| Component | Required For | Details |
-|-----------|-------------|---------|
-| Python 3.11+ | Everything | Core runtime |
-| Node.js 18+ | Auto-apply | Needed for `npx` to run Playwright MCP server |
-| Gemini API key | Scoring, tailoring, cover letters, tracking | Free tier (15 RPM / 1M tokens/day) is enough |
-| Chrome/Chromium | Auto-apply | Auto-detected on most systems |
-| Claude Code CLI | Auto-apply | Install from [claude.ai/code](https://claude.ai/code) |
-
-**Gemini API key is free.** Get one at [aistudio.google.com](https://aistudio.google.com). OpenAI is also supported as a fallback — see [LLM Configuration](#llm-configuration).
-
-### Optional
-
-| Component | What It Does |
-|-----------|-------------|
-| Gmail OAuth (via Google Cloud) | Enables response tracking with `applypilot track` |
-| OpenAI API key | Fallback if Gemini rate limits are hit |
-| CapSolver API key | Solves CAPTCHAs during auto-apply (hCaptcha, reCAPTCHA, Turnstile) |
-
-> **Note:** python-jobspy is installed separately with `--no-deps` because it pins an exact numpy version in its metadata that conflicts with pip's resolver. It works fine at runtime.
-
----
-
-## Configuration
-
-All generated by `applypilot init`:
-
-### `profile.json`
-Your personal data: contact info, work authorization, compensation, skills, experience, `resume_facts` (locked facts preserved during tailoring), EEO defaults, and optional job board credentials. Powers scoring, tailoring, form auto-fill, and tracking.
-
-### `searches.yaml`
-Job search queries, target titles, locations, boards, filters. Run multiple searches with different parameters.
-
-### `.env`
-API keys and runtime config: `GEMINI_API_KEY`, `OPENAI_API_KEY` (optional), `CAPSOLVER_API_KEY` (optional).
-
-### Package configs (shipped with ApplyPilot)
-- `config/employers.yaml` — Workday employer registry (48 preconfigured)
-- `config/sites.yaml` — Direct career sites (30+), blocked sites, base URLs
-- `config/searches.example.yaml` — Example search configuration
-
----
-
-## LLM Configuration
-
-ApplyPilot uses a two-tier model strategy with automatic multi-provider fallback:
-
-| Tier | Used For | Default Chain |
-|------|----------|---------------|
-| **Fast** | Scoring, HN extraction | Gemini 2.5 Flash → Gemini 2.0 Flash → GPT-4.1 Nano → GPT-4.1 Mini → Claude Haiku |
-| **Quality** | Tailoring, cover letters | Gemini 2.5 Pro → Gemini 2.5 Flash → GPT-4.1 Mini → Claude Sonnet → Claude Haiku |
-
-On rate limit (429): the exhausted model is skipped for 5 minutes and the next in chain is tried automatically. No intervention needed.
-
-Set `GEMINI_API_KEY` and optionally `OPENAI_API_KEY` in `~/.applypilot/.env`. Both have free tiers that cover normal usage.
-
----
-
-## How Stages Work
-
-### Discover
-Queries Indeed, LinkedIn, Glassdoor, ZipRecruiter, Google Jobs via JobSpy. Scrapes the monthly Hacker News "Who's Hiring" thread. Hits 48 Workday employer portals (configurable in `employers.yaml`) and 30 direct career sites with custom extractors. Deduplicates by URL.
-
-### Enrich
-Visits each job URL and extracts the full description. 3-tier cascade: JSON-LD structured data → CSS selector patterns → AI-powered extraction for unknown layouts. Failed fetches are categorized (expired, retriable, permanent) and retried with exponential backoff.
-
-### Score
-AI scores every job 1–10 against your profile. 9–10 = strong match, 7–8 = good, 5–6 = moderate, 1–4 = skip. Only jobs above your threshold proceed to tailoring. Failed LLM calls write `score_error` and retry with backoff rather than writing `fit_score=0`.
-
-### Tailor
-Generates a custom resume per job: reorders experience, emphasizes relevant skills, incorporates keywords from the job description. Your `resume_facts` (companies, projects, metrics) are preserved exactly. A validation step checks for banned words and fabrication before accepting the output; retries up to 5 times.
-
-### Cover Letter
-Writes a targeted cover letter per job referencing the specific company, role, and how your experience maps to their requirements.
-
-### Auto-Apply
-
-Claude Code launches Chrome instances, navigates to each application page, detects the ATS type (Workday, Greenhouse, Lever, iCIMS, and more), fills personal information and work history, uploads the tailored resume and cover letter, answers screening questions, and submits.
-
-Key behaviors:
-- **Parallel workers**: multiple Chrome instances run simultaneously (default: 5)
-- **ATS session persistence**: login cookies are saved per ATS so you don't re-login every run
-- **Per-worker status badge**: a floating badge is injected into Chrome via CDP showing the current job, status, and worker controls
-- **Company-aware scheduling**: jobs are spread across employers to avoid submitting to the same company twice in a row
-
-```bash
-applypilot apply                                  # launch with defaults (5 workers)
-applypilot apply --workers 3 --min-score 9        # tune parallelism and score floor
-applypilot apply --url URL --dry-run              # test a single job without submitting
-applypilot apply --fresh-sessions                 # refresh Chrome cookies from your real profile first
-applypilot apply --sessions                       # list saved ATS sessions
-applypilot apply --clear-session workday          # clear a specific ATS session
-applypilot apply --no-hitl                        # skip HITL waits (for overnight runs)
-applypilot apply --no-focus                       # prevent Chrome windows from stealing focus
-applypilot apply --reset-failed                   # retry all failed jobs
-applypilot apply --reset-category CATEGORY        # retry jobs in a specific failure category
-applypilot apply --mark-applied URL               # manually mark a job as applied
-applypilot apply --mark-failed URL --fail-reason "reason"
-applypilot apply --gen --url URL                  # generate prompt file for manual debugging
+```powershell
+.\.venv\Scripts\applypilot.exe --help
+pdflatex --version
 ```
 
-### Human-in-the-Loop (HITL)
+> [!TIP]
+> Si `pdflatex` n'est pas reconnu sous Windows, télécharge et installe [MiKTeX](https://miktex.org/download), puis ferme et rouvre ton terminal. Lors de la toute première compilation d'un CV, MiKTeX téléchargera automatiquement les extensions de mise en page nécessaires (compte 1 à 2 minutes).
 
-When the apply agent hits something it can't solve autonomously (a login wall, CAPTCHA, or an unusual form), it pauses and asks you to take over.
+Toutes tes données personnelles vivent **hors du dépôt Git**, dans ton dossier utilisateur `~/.applypilot/` (`C:\Users\<ton-nom>\.applypilot\`). Crée ce dossier :
 
-**In-pipeline HITL** (default): Chrome stays open with the current page. A floating badge appears in the corner showing the problem and a "Take Over / Done" button. You solve it, click Done, and the agent resumes on the same Chrome session.
-
-**Standalone HITL**: If you run apply in `--no-hitl` mode overnight, parked jobs are queued. Run `applypilot human-review` to open a web UI at `localhost:7373` listing all parked jobs with their reasons. Click a job to open Chrome and handle it.
-
-**Screening Q&A**: When an agent encounters a novel screening question, it surfaces it interactively before parking the job. You answer once; the answer is stored in the Q&A knowledge base and reused automatically on future applications.
-
-### Track
-
-Scans your Gmail inbox for responses to submitted applications, classifies each email (rejection, interview request, ghosting, or other), and stores the result in the database.
-
-```bash
-applypilot track                        # scan inbox and classify new responses
-applypilot track --days 30              # look back 30 days (default: 14)
-applypilot track --actions              # show pending action items (interviews to schedule, etc.)
-applypilot track --setup                # verify Gmail connectivity
-applypilot track --dry-run              # fetch and classify without writing to DB
-```
-
-Requires Gmail OAuth setup. Run `python scripts/gmail_oauth.py` once to authorize access and save credentials locally.
-
----
-
-## Q&A Knowledge Base
-
-Every screening question answered during the apply stage is stored in a local knowledge base. On future applications, matching questions are answered automatically without interrupting you.
-
-```bash
-applypilot qa list                      # show stored Q&A pairs
-applypilot qa stats                     # coverage stats by ATS and outcome
-applypilot qa export --output qa.yaml   # export for review/editing
-applypilot qa import qa.yaml            # import edited answers
+```powershell
+New-Item -ItemType Directory -Force "$HOME\.applypilot\cv_latex\assets"
 ```
 
 ---
 
-## Credentials Management
+## 3. Configuration de TON profil (Tes infos à toi)
 
-Store job board usernames and passwords for ATS auto-login. Credentials are stored locally in SQLite and included in LLM prompts during the apply stage — see the [security section](#security--privacy--read-this-before-you-run) for implications.
+C'est l'étape essentielle : **la qualité de tes CV et la précision du préremplissage dépendent uniquement de ce que tu écris ici.** Aucun contenu par défaut ne viendra polluer tes candidatures.
 
-```bash
-applypilot creds list                           # list all saved credentials (passwords masked)
-applypilot creds show DOMAIN                    # show unmasked credentials for a domain
-applypilot creds add DOMAIN -e user@example.com # add or update (password prompted)
-applypilot creds set DOMAIN -p newpass          # update a specific field
-applypilot creds delete DOMAIN                  # delete with confirmation
-applypilot creds import-logs                    # scan apply logs for credentials and import
-applypilot creds import-logs --dry-run          # preview without writing
+Des fichiers d'exemples propres (`*.example.json` / `*.example.yaml`) sont fournis dans le dépôt pour te servir de modèle.
+
+### 3.1 Tes clés d'API (`.env`)
+
+Copie le modèle de configuration :
+
+```powershell
+Copy-Item .env.example "$HOME\.applypilot\.env"
+```
+
+Ouvre le fichier `$HOME\.applypilot\.env` avec un éditeur de texte (Bloc-notes, VS Code...) et renseigne tes informations :
+
+```ini
+# --- Fournisseur LLM principal (Groq : gratuit et très rapide) ---
+GROQ_API_KEY=gsk_ton_token_ici
+
+# --- Fournisseur LLM de secours (facultatif) ---
+GEMINI_API_KEY=AIzaSy_ton_token_ici
+
+# --- Bot Telegram ---
+TELEGRAM_BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrSTUvwxYZ
+TELEGRAM_USER_ID=987654321
+```
+
+* **`GROQ_API_KEY`** : Obtiens ta clé gratuite en 30 secondes sur [console.groq.com/keys](https://console.groq.com/keys) (aucune carte bancaire requise).
+* **`TELEGRAM_BOT_TOKEN`** : Sur Telegram, parle à [@BotFather](https://t.me/BotFather), envoie `/newbot` et copie le jeton fourni.
+* **`TELEGRAM_USER_ID`** : Sur Telegram, parle à [@userinfobot](https://t.me/userinfobot) pour connaître ton identifiant numérique. **Le bot n'obéira qu'à cet identifiant pour protéger tes données.**
+
+---
+
+### 3.2 Ton catalogue d'expériences (`experiences.json`)
+
+C'est la **base de données unique de ton profil**. Le moteur de CV y sélectionne les projets pertinents pour chaque offre.
+
+Copie le modèle d'exemple :
+
+```powershell
+Copy-Item experiences.example.json "$HOME\.applypilot\experiences.json"
+```
+
+Ouvre `$HOME\.applypilot\experiences.json` et remplace les exemples par tes vraies informations :
+
+#### A. Le bloc `candidate` (Coordonnées)
+```json
+"candidate": {
+  "full_name": "Alex Dupont",
+  "title": "Élève-ingénieur en Informatique & Logiciel",
+  "objective": "Recherche un stage de fin d'études de 6 mois à partir de mars 2027 en ingénierie logicielle.",
+  "location": "Paris (75000), France",
+  "email": "alex.dupont@email.com",
+  "phone": "+33 6 12 34 56 78",
+  "linkedin": "https://www.linkedin.com/in/alex-dupont",
+  "github": "https://github.com/alexdupont",
+  "portfolio": "https://alexdupont.dev",
+  "nationality": "Française",
+  "citizenship": "France"
+}
+```
+
+#### B. Le bloc `education` (Formations)
+Renseigne tes études de la plus récente à la plus ancienne :
+```json
+"education": [
+  {
+    "institution": "Diplôme d'ingénieur (Bac+5), spécialité Génie Logiciel",
+    "degree": "École Centrale / INSA / Polytech, Paris",
+    "dates": "09/2023 – 06/2028",
+    "start_date": "01/09/2023",
+    "end_date": "01/06/2028",
+    "is_current": "Yes"
+  },
+  {
+    "institution": "Lycée Henri IV, Paris",
+    "degree": "Baccalauréat général, mention Très Bien",
+    "dates": "09/2020 – 07/2023"
+  }
+]
+```
+
+#### C. Le bloc `experiences` (Projets, stages et emplois)
+Chaque expérience doit avoir cette structure :
+```json
+{
+  "id": "plateforme-microservices-docker",
+  "type": "projet_technique",
+  "title": "Plateforme web distribuée et API REST",
+  "org": "Projet académique",
+  "dates": "02/2026 -- 05/2026",
+  "bullets": [
+    "**Développé une API REST** en FastAPI et PostgreSQL gérant 150 requêtes/seconde.",
+    "**Conteneurisé l'infrastructure** avec Docker Compose et mis en place une CI/CD GitHub Actions."
+  ],
+  "tech": ["Python", "FastAPI", "Docker", "PostgreSQL", "GitHub Actions"],
+  "tags": ["developpement", "backend", "devops", "cloud"],
+  "relevance": "high"
+}
+```
+
+* **`type`** : Mets `"experience_pro"` pour un stage ou un emploi (affiché dans *Expériences professionnelles*), ou `"projet_technique"` (affiché dans *Projets*).
+* **`bullets`** : **Règle d'or** : 1 à 3 puces, chacune commençant par un **verbe d'action au passé en gras** (`**Développé** ...`, `**Conçu** ...`, `**Déployé** ...`) avec un chiffre ou un impact concret.
+* **`tech`** : Les technologies clés du projet (servent pour matcher les mots-clés demandés par l'offre).
+
+#### D. Le bloc `skills` (Compétences techniques)
+Classe tes outils par catégorie du plus important au moins important :
+```json
+"skills": {
+  "developpement": ["Python", "Go", "TypeScript", "FastAPI", "React", "PostgreSQL"],
+  "devops_cloud": ["Docker", "Kubernetes", "Linux", "Git", "GitHub Actions", "AWS"],
+  "systemes_reseaux": ["Debian", "TCP/IP", "Nginx", "Reverse Proxy", "DNS", "Wireshark"]
+}
+```
+
+> [!IMPORTANT]
+> Pour garantir un CV parfaitement calibré sur une seule page A4 sans couper de mots :
+> - Au maximum **4 catégories** de compétences sont affichées.
+> - Au maximum **6 outils par catégorie** sont affichés.
+
+#### E. Options avancées de CV (`cv_settings` facultatif)
+Tu peux ajouter à la fin de ton fichier `experiences.json` un bloc `cv_settings` :
+```json
+"cv_settings": {
+  "mandatory_experience_ids": ["plateforme-microservices-docker"],
+  "projects_title": "Projets & Réalisations"
+}
+```
+* **`mandatory_experience_ids`** : IDs de tes projets qui doivent **toujours** apparaître sur tous tes CV, quelle que soit l'offre.
+* **`projects_title`** : Titre de la section projets sur le CV (par défaut : *Projets*).
+
+---
+
+### 3.3 Ton profil de formulaires (`profile.json`)
+
+Ce fichier est utilisé par le serveur local et l'extension Chrome pour préremplir automatiquement les formulaires en ligne (Workday, SmartRecruiters, Taleo, etc.).
+
+Copie le modèle :
+
+```powershell
+Copy-Item profile.example.json "$HOME\.applypilot\profile.json"
+```
+
+Ouvre `$HOME\.applypilot\profile.json` et adapte tes réponses :
+* **`personal`** : Prénom, nom, e-mail, téléphone, ville, code postal, liens LinkedIn/GitHub.
+* **`internship`** : Type de stage (*Stage de fin d'études*, *Stage de césure*), durée (*6 mois*), date de disponibilité (*mars 2027*), convention de stage (*Oui, délivrée par mon école*).
+* **`experience`** : Niveau d'études (*Bac+5*), nom de ton école.
+* **`work_authorization`** : Autorisation de travail en France (*Oui*), permis de conduire (*Oui, titulaire du permis B*).
+
+---
+
+### 3.4 Tes mots-clés de veille (`searches.yaml`)
+
+Ce fichier définit ce que le bot recherche automatiquement lors de ses veilles de fond.
+
+```powershell
+Copy-Item src\applypilot\config\searches.example.yaml "$HOME\.applypilot\searches.yaml"
+```
+
+Modifie les mots-clés selon ta spécialité (développement web, data, cybersécurité, systèmes et réseaux...) et ta ville de recherche.
+
+---
+
+### 3.5 Ton CV pour les jobs étudiants (`cv_job_etudiant.json`) *(facultatif)*
+
+Si tu cherches aussi un job étudiant pour les soirs et week-ends (vente, caisse, accueil, manutention, restauration) :
+
+```powershell
+Copy-Item cv_job_etudiant.example.json "$HOME\.applypilot\cv_job_etudiant.json"
+.\.venv\Scripts\applypilot.exe cv-etudiant
+```
+
+Ce CV spécial met en avant tes qualités relationnelles et ta disponibilité horaire, tout en reprenant automatiquement tes coordonnées réelles depuis `experiences.json`.
+
+---
+
+### 3.6 Ta photo d'identité *(facultatif)*
+
+Dépose simplement ta photo au format JPG ici :  
+`~/.applypilot/cv_latex/assets/photo.jpg`
+
+Elle sera automatiquement détourée dans un cercle élégant en haut à gauche de tes CV. Si aucune photo n'est présente, tes initiales sont dessinées à la place.
+
+---
+
+## 4. Génération & Réserve de CV sur-mesure
+
+### 4.1 Comment ça fonctionne ?
+ApplyPilot ne régénère pas un CV de zéro dans la précipitation au moment de postuler. Il utilise une **réserve de CV relus à l'avance**, déclinés par branche de ton domaine :
+
+1. Tu génères ta réserve de CV une fois pour toutes :
+   ```powershell
+   .\.venv\Scripts\applypilot.exe cv-reserve
+   ```
+2. Les PDF et les fichiers JSON de chaque branche sont enregistrés dans `~/.applypilot/cv_latex/reserve/`.
+3. **Ouvre chaque PDF et relis-le**. Si tu souhaites retoucher une accroche ou changer l'ordre des projets d'une branche :
+   - Ouvre le fichier JSON correspondant (ex: `DevOps.json`).
+   - Corrige le champ `profil` (l'accroche) ou les IDs de projets.
+   - Recompile instantanément **sans aucun appel LLM** :
+     ```powershell
+     .\.venv\Scripts\applypilot.exe cv-reserve --recompile
+     ```
+
+### 4.2 L'adaptation en temps réel lors d'une offre
+Quand tu cliques sur **Préparer ma candidature** sur Telegram :
+1. Le bot analyse l'offre et sélectionne le CV de la branche correspondante.
+2. Si l'offre mentionne une technologie que tu maîtrises (présente dans ton `experiences.json`) mais non affichée sur le CV type, l'IA l'intègre automatiquement.
+3. Si le LLM est indisponible (quota atteint ou pas de réseau), le CV de réserve validé est envoyé immédiatement. **Tu n'es jamais bloqué.**
+
+---
+
+## 5. Le Bot Telegram au quotidien
+
+Lance le bot dans un terminal (et laisse-le tourner en arrière-plan) :
+
+```powershell
+.\.venv\Scripts\applypilot.exe telegram-bot
+```
+
+> [!TIP]
+> Sous Windows, tu peux aussi simplement double-cliquer sur le raccourci `lancer_bot.bat` à la racine du projet.
+
+### Les commandes principales :
+
+| Commande | Rôle |
+|---|---|
+| `/scan [métier] [ville]` | Lance une veille en direct sur **HelloWork** et **Indeed** et t'envoie les nouvelles offres |
+| `/hellowork [ville]` *(ou `/hw`)* | Veille en direct exclusivement sur **HelloWork** |
+| `/search [métier] [ville]` | Recherche ciblée sur Indeed avec notation de pertinence de 0 à 10 par l'IA |
+| `/offres [métier] [ville]` | Affiche les meilleures offres récentes déjà enregistrées en base |
+| `/job [ville]` | Recherche de jobs étudiants et intérim en présentiel sur Indeed (ex: `/job Paris`) |
+| `/jobhellowork [ville]` | Recherche de jobs étudiants sur HelloWork |
+| `/jobdistant` | Recherche de jobs étudiants et missions d'intérim **100 % en télétravail** partout en France |
+| `/compteur` | Affiche tes statistiques (candidatures envoyées aujourd'hui, cumulées, historique) |
+| `/toutes` | Affiche l'historique complet de toutes tes candidatures avec un bouton **Voir tout** |
+| `/experience [description]` | Ajoute une nouvelle expérience à ton catalogue `experiences.json` sans quitter Telegram |
+| `/done` | Marque la dernière offre préparée comme « postulée » (elle ne te sera plus jamais représentée) |
+
+### Le cycle d'une candidature :
+```mermaid
+flowchart LR
+    A["📱 Offre reçue sur Telegram"] --> B["Bouton 'Préparer' ou '✏️ Modifier'"]
+    B --> C["📄 CV PDF sur-mesure d'une page"]
+    C --> D["🌐 Formulaire ouvert sur PC"]
+    D --> E["⚡ Extension Chrome : Remplir"]
+    E --> F["🖱️ Tu vérifies et cliques sur Envoyer"]
+    F --> G["✅ Commande /done"]
 ```
 
 ---
 
-## Using ApplyPilot with Claude Code
+## 6. L'Extension Chrome d'auto-remplissage
 
-Claude Code is Anthropic's CLI tool. Instead of memorizing every command, you can open the project in Claude Code and tell it what you want in plain language — it reads logs, runs commands, interprets errors, and fixes things that break.
+L'extension ApplyPilot préremplit automatiquement les champs des formulaires de recrutement et y attache directement ton CV PDF adapté.
 
-### Quick Start
+### Installation en 3 clics :
+1. Ouvre Google Chrome et rends-toi sur `chrome://extensions/`.
+2. Active le **Mode développeur** (en haut à droite).
+3. Clique sur **Charger l'extension non empaquetée** et sélectionne le dossier :  
+   `src/applypilot/apply/extension`
 
-```bash
-# Install Claude Code (requires a Claude account)
-# → https://claude.ai/code
-
-# Clone the repo and open in Claude Code
-git clone https://github.com/ibarrajo/ApplyPilot
-cd ApplyPilot
-claude
-```
-
-Then just tell it what you want:
-
-```
-Help me set up ApplyPilot for the first time.
-```
-```
-Run the pipeline and tell me what's happening at each stage.
-```
-```
-I got an error. Here's what it said: [paste error]. Can you fix it?
-```
-```
-Check status and apply to the top-scoring jobs.
-```
-
-### Setting Up Your CLAUDE.md
-
-ApplyPilot ships a `CLAUDE.md.example` file that serves as an operating manual for Claude Code. When Claude Code opens your project, it reads this file to understand how the pipeline works, where your files are, and what your current state is.
-
-**To use it:**
-
-```bash
-cp CLAUDE.md.example CLAUDE.md
-# Edit CLAUDE.md — fill in your name, location, target roles, and current pipeline state
-```
-
-`CLAUDE.md` is gitignored. It's personal to you and your machine — never commit it.
-
-**What to fill in:**
-- Your name and job search email
-- Target role level and type (Senior Backend, Staff Eng, etc.)
-- Location rules (included cities, excluded cities)
-- Current pipeline state (updated as you run stages)
-- Any TODOs or known issues
-
-With a well-maintained `CLAUDE.md`, you can hand off the entire pipeline to Claude Code with a single prompt and it will operate it correctly.
-
-> **A Max plan is required for the auto-apply stage.** Discovery, scoring, tailoring, and tracking run on Gemini/OpenAI and don't use Claude credits. Only `applypilot apply` spawns a Claude Code subprocess.
+### Utilisation :
+1. Le bot Telegram doit être lancé (le serveur local d'API tourne sur `http://localhost:8765`).
+2. Sur la page d'un formulaire de candidature (SmartRecruiters, Workday, Taleo, Welcome to the Jungle...) :
+3. Clique sur l'icône **ApplyPilot** dans la barre d'outils Chrome, puis clique sur **« Remplir le formulaire actuel »**.
+4. L'extension remplit tes informations personnelles, répond aux questions ouvertes à partir de tes faits réels, et injecte le fichier PDF de ton CV.
+5. **Tu relis attentivement les réponses et tu cliques toi-même sur « Postuler »**.
 
 ---
 
-## CLI Reference
+## 7. Suivi des consultations de ton CV *(facultatif)*
 
-### Pipeline
+Tu peux savoir en temps réel quand un recruteur clique sur ton profil LinkedIn, GitHub ou Portfolio depuis ton CV, et recevoir une notification Telegram instantanée.
 
-```bash
-applypilot init                          # one-time setup wizard
-applypilot run [stages...]               # run pipeline stages (discover enrich score tailor cover pdf)
-applypilot run all                       # run all stages in sequence
-applypilot run --workers 4               # parallel workers for discovery/enrichment
-applypilot run --stream                  # run multiple stages concurrently (streaming mode)
-applypilot run --min-score 8             # override score threshold
-applypilot run --limit 50                # limit jobs per stage
-applypilot run --dry-run                 # preview without executing
-applypilot status                        # pipeline funnel stats
-applypilot dashboard                     # generate and open HTML dashboard
-```
+Cela repose sur un micro-service gratuit hébergé sur un Worker Cloudflare :
+1. Crée un compte gratuit sur [Cloudflare Workers](https://dash.cloudflare.com/sign-up).
+2. Dans `deploy/tracer-worker/wrangler.toml`, renseigne tes vraies URL de profil (`LINKEDIN_URL`, `GITHUB_URL`, `PORTFOLIO_URL`).
+3. Déploie le service en une commande :
+   ```powershell
+   .\deploy\deploy_tracer_worker.ps1
+   ```
+4. Dès lors, les liens de tes CV passeront par ton worker sécurisé, comptabilisant les consultations réelles tout en ignorant les robots des portails de recrutement.
 
-### Apply
+---
 
-```bash
-applypilot apply                         # launch auto-apply (5 workers by default)
-applypilot apply --workers 3             # parallel browser instances
-applypilot apply --min-score 9           # score floor for job selection
-applypilot apply --dry-run               # fill forms without submitting
-applypilot apply --continuous            # run forever, polling for new jobs
-applypilot apply --headless              # headless browser mode
-applypilot apply --url URL               # apply to one specific job
-applypilot apply --no-hitl               # skip HITL waits (for overnight runs)
-applypilot apply --no-focus              # prevent Chrome windows from stealing focus
-applypilot apply --fresh-sessions        # refresh Chrome cookies from your real profile
-applypilot apply --sessions              # list saved ATS sessions
-applypilot apply --clear-session NAME    # clear a specific ATS session (e.g. workday)
-applypilot apply --reset-failed          # reset all failed jobs for retry
-applypilot apply --reset-category CAT   # reset jobs in a failure category
-applypilot apply --mark-applied URL      # manually mark a job as applied
-applypilot apply --mark-failed URL --fail-reason "reason"
-applypilot apply --gen --url URL         # generate prompt file for manual debugging
-applypilot human-review                  # open HITL web UI for parked jobs (port 7373)
-```
+## 8. Personnaliser les branches à ton métier
 
-### Tracking
+Par défaut, la réserve de CV est déclinée en 10 branches orientées informatique et cybersécurité (*SOC, Pentest, GRC, Audit, AD, Reseau, DevOps, Cloud, IA, Cyber*).
 
-```bash
-applypilot track                         # scan Gmail and classify responses
-applypilot track --days 30               # look-back period in days (default: 14)
-applypilot track --actions               # show action items (interviews, follow-ups)
-applypilot track --setup                 # verify Gmail MCP connectivity
-applypilot track --dry-run               # classify without writing to DB
-```
+Si tu es dans un autre domaine (ex: *Développement Web, Data Science, Marketing, Finance...*), tes offres tomberont par défaut sur le CV générique. Pour créer tes propres branches métiers, il suffit de modifier 4 dictionnaires dans [`src/applypilot/cv_latex.py`](file:///C:/Users/jamai/OneDrive/Desktop/applypilot-fr/src/applypilot/cv_latex.py) :
 
-### Q&A Knowledge Base
+* **`RESERVE_BRANCHES`** : Titres et descriptions types de tes branches.
+* **`_title_tag()`** : Mots-clés de l'intitulé de l'offre orientant vers une branche.
+* **`_BRANCH_KEYWORDS`** : Vocabulaire technique spécifique à chaque spécialité.
+* **`SKILL_LABELS`** : Libellés élégants de tes catégories de compétences.
 
-```bash
-applypilot qa list                       # list stored Q&A pairs
-applypilot qa stats                      # coverage stats by ATS and outcome
-applypilot qa export --output qa.yaml    # export to YAML for editing
-applypilot qa import qa.yaml             # import from YAML
-```
+---
 
-### Credentials
+## 9. Dépannage & FAQ
 
-```bash
-applypilot creds list                           # list all saved credentials
-applypilot creds show DOMAIN                    # show unmasked credentials
-applypilot creds add DOMAIN -e EMAIL            # add or update
-applypilot creds set DOMAIN -p NEWPASS          # update a field
-applypilot creds delete DOMAIN                  # delete with confirmation
-applypilot creds import-logs                    # import from apply logs
-applypilot creds import-logs --dry-run          # preview without writing
+### `pdflatex introuvable`
+> Installe [MiKTeX](https://miktex.org/download) sur Windows (ou `texlive-full` sur Linux/Ubuntu via `sudo apt install texlive-full`). Pense à fermer et rouvrir ton terminal après l'installation pour mettre à jour la variable `PATH`.
+
+### Le CV dépasse sur une deuxième page
+> ApplyPilot ajuste automatiquement les marges et réduit les puces pour garantir **1 seule page A4**. Si un dépassement survient, c'est généralement qu'une puce dans `experiences.json` est exceptionnellement longue : raccourcis-la en 2 ou 3 lignes concises.
+
+### Le bot Telegram ne répond pas
+> 1. Vérifie que le bot est bien lancé dans ta console (`applypilot telegram-bot`).
+> 2. Vérifie que ton identifiant est bien renseigné dans `TELEGRAM_USER_ID` du fichier `.env`. Pour des raisons de sécurité, le bot ignore silencieusement tout message provenant d'un compte non autorisé.
+
+### Port 8765 déjà utilisé (`Errno 10048`)
+> Un ancien processus du bot tourne encore en arrière-plan. Sous PowerShell, libère le port :
+> ```powershell
+> Stop-Process -Id (Get-NetTCPConnection -LocalPort 8765).OwningProcess -Force
+> ```
+
+---
+
+## Tests unitaires
+
+Pour exécuter la suite de tests automatisée (500+ tests vérifiant le moteur LaTeX, l'auto-remplissage, les scrapers et la non-régression) :
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q
 ```
 
 ---
 
-## Security & Privacy — Read This Before You Run
+## Licence & Crédits
 
-ApplyPilot handles sensitive data: your resume, contact info, work history, and optionally credentials for job boards. Before you run anything, understand exactly what stays on your machine and what leaves it.
-
-### What stays local
-
-- **`~/.applypilot/applypilot.db`** — SQLite database with every job discovered, scored, and applied to, plus your application status, Q&A knowledge base, and stored credentials
-- **`~/.applypilot/profile.json`** — your full profile: name, contact info, work history, skills, salary expectations, EEO fields
-- **`~/.applypilot/tailored_resumes/`** and **`~/.applypilot/cover_letters/`** — AI-generated documents per job
-- **`~/.applypilot/.env`** — your API keys. Never committed to git.
-- **`~/.gmail-mcp/`** — Gmail OAuth credentials. Never committed to git.
-
-None of this is uploaded to any ApplyPilot server. There is no ApplyPilot cloud. The project is fully local.
-
-### What gets sent to external APIs
-
-| What's sent | Where | Why |
-|-------------|-------|-----|
-| Your resume + job description | Gemini (Google) or OpenAI | Scoring and tailoring |
-| Your resume + company info | Gemini or OpenAI | Cover letter generation |
-| Form field contents + job URL | Claude (Anthropic) | Auto-apply stage |
-
-**Your resume content is sent to Google and/or OpenAI** every time a job is scored or tailored. Review the privacy policies of [Google AI Studio](https://aistudio.google.com) and [OpenAI](https://openai.com/policies/privacy-policy).
-
-### Passwords and credentials — be careful
-
-`profile.json` can include account passwords for job boards. These are stored in plaintext in the local SQLite database and are included verbatim in LLM prompts sent to external providers during the auto-apply stage.
-
-**Recommendations:**
-- Do not store your primary password for anything
-- If you use password storage here, create a unique password used only for job applications
-- Better yet: rely on browser session auth (log in manually once, let the browser remember it) and leave the password field empty
-- Use a dedicated job-search email address, not your primary one
-
-### The auto-apply stage (Tier 3)
-
-The auto-apply stage spawns a Claude Code subprocess with `--bypassPermissions`. This means Claude can take autonomous actions in the browser without asking for confirmation on each step. It is sandboxed with `--strict-mcp-config` to limit which browser tools it can access, but you are granting meaningful autonomy to an AI agent acting on your behalf.
-
-Dry run first:
-
-```bash
-applypilot apply --dry-run --url <job_url>
-```
-
----
-
-## A Note from Alex
-
-I forked this project during my own job search and ended up going pretty deep on it — adding multi-provider LLM fallback, human-in-the-loop review, Gmail tracking, a Q&A knowledge base, ATS session persistence, and a lot of pipeline hardening along the way. Credit to [Pickle-Pixel](https://github.com/Pickle-Pixel) for the solid foundation.
-
-If you're using this fork — I hope it helps. This pipeline got me in front of companies I genuinely cared about, at a pace I never could have managed manually.
-
-If it's been useful, the best way to say thanks: [follow me on GitHub](https://github.com/ibarrajo) and star the repo. It signals that the work matters.
-
----
-
-**One thing I want to be honest about:** blasting every ATS and every job board shouldn't be the goal — and I say that as someone who built this and used it himself.
-
-The signal-to-noise problem in hiring is already catastrophic. ATS inboxes are flooded. Recruiters are overwhelmed. Candidates are invisible. Adding more volume doesn't fix that — it makes it worse for everyone, including you.
-
-I used ApplyPilot as a force multiplier for a *focused* search: high-fit jobs, properly tailored materials, applied efficiently. Not a firehose.
-
-The deeper problem is the matching problem itself — the **n×m problem** of connecting the right job seekers to the right employers at scale. I spent three years at [Jobscan](https://www.jobscan.co) as a lead engineer thinking about exactly this. We built resume optimization tuned per company and ATS, job trackers, and coaching tools for career professionals — all trying to close the gap between what candidates bring and what employers can actually see. It's hard. The current system is structurally broken.
-
-That's why, at a recent [Venture Mechanics](https://venturemechanics.com) AI Scalathon in Seattle, my team and I explored what I think is the natural next step: **agent-to-agent matching**. Instead of humans gaming systems built for computers, imagine employer agents and candidate agents negotiating directly — structured, transparent, and actually aligned with what both sides want. A future where AI closes the gap rather than adding to the noise.
-
-ApplyPilot is a tool for today's broken system. The agent-to-agent future is what I'm working toward next. My team and I are building that — it's called **Pursuit**.
-
-Good luck out there. Reach me at [elninja.com](https://elninja.com) if you want to talk.
-
-Oh, and — if you're a recruiter or hiring manager who ended up here: hi. I'm the one looking for a job. You just found me without a job board, a keyword filter, or an ATS — so maybe we can skip all that. [LinkedIn](https://www.linkedin.com/in/elninja) or [my resume](https://elninja.com/resume) work just fine.
-
-— Alex Ibarra
-
----
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, coding standards, and PR guidelines.
-
----
-
-## License
-
-ApplyPilot is licensed under the [GNU Affero General Public License v3.0](LICENSE).
-
-You are free to use, modify, and distribute this software. If you deploy a modified version as a service, you must release your source code under the same license.
+* **Projet parent** : [ApplyPilot](https://github.com/Pickle-Pixel/ApplyPilot) par Pickle-Pixel.
+* **Adaptation française** : Adaptation pour le marché français (HelloWork, Indeed, conventions de stage, moteur LaTeX une page A4 conforme ATS, pilotage Telegram et jobs étudiants) développée par [Ali Jamai](https://github.com/JamaiAli).
+* **Licence** : [GNU Affero General Public License v3.0 (AGPL-3.0)](LICENSE).

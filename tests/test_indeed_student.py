@@ -113,7 +113,7 @@ def test_merge_bourges_and_saint_doulchard_jobs():
 
     bourges_jobs = [
         {"url": "u1", "title": "Equipier Polyvalent", "employer_name": "McDo", "location": "Bourges", "posted_at": "2026-11-08T08:00", "anciennete_jours": 0},
-        {"url": "u2", "title": "Hote de caisse", "employer_name": "Carrefour", "location": "Bourges", "posted_at": "2026-11-07T10:00", "anciennete_jours": 1},
+        {"url": "u2", "title": "Hote d accueil", "employer_name": "TestCompanyFictif", "location": "Bourges", "posted_at": "2026-11-07T10:00", "anciennete_jours": 1},
     ]
     saint_doulchard_jobs = [
         # Doublon de u1 (même titre et employeur)

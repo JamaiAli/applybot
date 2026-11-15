@@ -53,5 +53,8 @@ Thumbs.db
 
 # Claude Code
 .claude/
+graphify-out/
+# Cache local de l'outil Cloudflare (déploiement du traceur)
+.wrangler/
 # CLAUDE.md is machine/user-specific — copy CLAUDE.md.example to customize
 CLAUDE.md
