@@ -1087,9 +1087,17 @@ async def track_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if context.args and context.args[0].isdigit():
         days = min(60, max(1, int(context.args[0])))
 
+    sources_label = "Gmail"
+    try:
+        from applypilot.tracking.gmail_client import insa_is_configured
+        if insa_is_configured():
+            sources_label = "Gmail & INSA"
+    except Exception:
+        pass
+
     chat_id = update.effective_chat.id
     status_msg = await context.bot.send_message(
-        chat_id, f"📬 <i>Analyse des {days} derniers jours sur ta boîte Gmail…</i>",
+        chat_id, f"📬 <i>Analyse des {days} derniers jours sur tes boîtes email ({sources_label})…</i>",
         parse_mode=ParseMode.HTML,
     )
 

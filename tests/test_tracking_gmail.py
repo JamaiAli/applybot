@@ -45,6 +45,19 @@ def test_check_gmail_setup_imap(monkeypatch):
     assert "test.candidat@gmail.com" in msg
 
 
+def test_check_setup_with_insa(monkeypatch):
+    """When INSA credentials are provided, check_gmail_setup includes INSA."""
+    monkeypatch.setenv("GMAIL_USER", "test.candidat@gmail.com")
+    monkeypatch.setenv("GMAIL_APP_PASSWORD", "abcd efgh ijkl mnop")
+    monkeypatch.setenv("INSA_EMAIL", "ali.jamai@insa-cvl.fr")
+    monkeypatch.setenv("INSA_PASSWORD", "secret123")
+
+    ok, msg = check_gmail_setup()
+    assert ok is True
+    assert "Gmail" in msg and "INSA" in msg
+    assert "ali.jamai@insa-cvl.fr" in msg
+
+
 # ---------------------------------------------------------------------------
 # 2. French Recruitment Triage
 # ---------------------------------------------------------------------------

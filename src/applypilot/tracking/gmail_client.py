@@ -53,29 +53,44 @@ def get_auth_mode() -> str:
     return "none"
 
 
-def check_gmail_setup() -> tuple[bool, str]:
-    """Verify Gmail prerequisites are in place (IMAP or MCP).
+def insa_is_configured() -> bool:
+    """Vérifie si les identifiants de la messagerie INSA (mail.insa-cvl.fr) sont présents."""
+    from applypilot.config import load_env
+    load_env()
+    user = (os.environ.get("INSA_EMAIL") or os.environ.get("INSA_USER") or "").strip()
+    pwd = (os.environ.get("INSA_PASSWORD") or os.environ.get("INSA_APP_PASSWORD") or "").strip()
+    return bool(user and pwd)
 
-    Returns:
-        (ok, message) — ok is True if setup is valid.
-    """
+
+def check_gmail_setup() -> tuple[bool, str]:
+    """Vérifie les prérequis de messagerie (Gmail IMAP/MCP et/ou INSA CVL)."""
+    from applypilot.config import load_env
+    load_env()
+
+    sources = []
     mode = get_auth_mode()
     if mode == "imap":
         user = os.environ.get("GMAIL_USER") or os.environ.get("GMAIL_EMAIL")
-        return True, f"Gmail IMAP configuré ({user})"
-    if mode == "mcp":
-        return True, "Gmail MCP OAuth configuré."
+        sources.append(f"Gmail IMAP ({user})")
+    elif mode == "mcp":
+        sources.append("Gmail MCP OAuth")
+
+    if insa_is_configured():
+        insa_user = (os.environ.get("INSA_EMAIL") or os.environ.get("INSA_USER") or "").strip()
+        sources.append(f"INSA CVL ({insa_user})")
+
+    if sources:
+        return True, " + ".join(sources) + " configuré(s)"
 
     return False, (
-        "Gmail n'est pas encore configuré pour le suivi des candidatures.\n\n"
-        "Configuration rapide (1 minute) :\n"
-        "  1. Ouvre https://myaccount.google.com/apppasswords dans ton navigateur\n"
-        "  2. Crée un mot de passe d'application nommé 'ApplyPilot'\n"
-        "  3. Copie le mot de passe de 16 lettres généré\n"
-        "  4. Ajoute ces deux lignes dans ~/.applypilot/.env :\n"
+        "Aucune messagerie n'est configurée pour le suivi des candidatures (/track).\n\n"
+        "Configuration dans ~/.applypilot/.env :\n"
+        "  1. Pour Gmail :\n"
         "       GMAIL_USER=ton.email@gmail.com\n"
-        "       GMAIL_APP_PASSWORD=xxxx xxxx xxxx xxxx\n\n"
-        "Une fois ajouté, relance `/track` sur Telegram ou `applypilot track` !"
+        "       GMAIL_APP_PASSWORD=xxxx xxxx xxxx xxxx (depuis myaccount.google.com/apppasswords)\n\n"
+        "  2. Pour l'adresse INSA (ali.jamai@insa-cvl.fr) :\n"
+        "       INSA_EMAIL=ali.jamai@insa-cvl.fr\n"
+        "       INSA_PASSWORD=ton_mot_de_passe_insa\n"
     )
 
 
@@ -120,6 +135,120 @@ def _find_all_mail_folder(client: imaplib.IMAP4_SSL) -> str:
         except Exception:
             continue
     return "INBOX"
+
+
+def _get_insa_imap_client() -> imaplib.IMAP4_SSL | None:
+    """Établit une connexion IMAP SSL vers la messagerie INSA CVL (mail.insa-cvl.fr)."""
+    from applypilot.config import load_env
+    load_env()
+
+    user = (os.environ.get("INSA_EMAIL") or os.environ.get("INSA_USER") or "").strip()
+    pwd = (os.environ.get("INSA_PASSWORD") or os.environ.get("INSA_APP_PASSWORD") or "").strip()
+    if not user or not pwd:
+        return None
+
+    server = (os.environ.get("INSA_IMAP_SERVER") or "mail.insa-cvl.fr").strip()
+    port = int(os.environ.get("INSA_IMAP_PORT") or 993)
+
+    try:
+        client = imaplib.IMAP4_SSL(server, port)
+        client.login(user, pwd)
+        return client
+    except Exception as exc:
+        log.warning("Impossible de se connecter à la boîte INSA (%s@%s) : %s", user, server, exc)
+        return None
+
+
+def _insa_search_application_emails(days: int = 14, limit: int = 50) -> list[dict]:
+    """Recherche les emails de recrutement sur la boîte INSA via IMAP standard."""
+    client = _get_insa_imap_client()
+    if not client:
+        return []
+
+    results: dict[str, dict] = {}
+    try:
+        status, _ = client.select("INBOX", readonly=True)
+        if status != "OK":
+            return []
+
+        MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        since_str = f"{cutoff.day:02d}-{MONTHS[cutoff.month - 1]}-{cutoff.year}"
+
+        status, data = client.uid('search', None, f'(SINCE "{since_str}")')
+        if status != "OK" or not data or not data[0]:
+            return []
+
+        uids = [u.decode("utf-8", errors="ignore") for u in data[0].split()]
+        uids.sort(key=lambda x: int(x) if x.isdigit() else 0, reverse=True)
+
+        recruitment_patterns = re.compile(
+            r"candidat|stage|entretien|interview|recrut|offre|postul|application|talent|rh\b|careers|job|"
+            r"workday|smartrecruiters|taleo|flatchr|welcomekit|hellowork|indeed|rencontre",
+            re.I
+        )
+
+        for uid in uids:
+            try:
+                status, fetch_data = client.uid(
+                    'fetch', uid,
+                    '(BODY.PEEK[HEADER.FIELDS (SUBJECT FROM TO DATE MESSAGE-ID)] BODY.PEEK[TEXT]<0.3000>)'
+                )
+                if status != "OK" or not fetch_data:
+                    continue
+
+                raw_header = b""
+                raw_snippet = b""
+                for item in fetch_data:
+                    if isinstance(item, tuple):
+                        h_info = item[0].decode("utf-8", errors="ignore")
+                        if "HEADER" in h_info:
+                            raw_header = item[1]
+                        elif "TEXT" in h_info:
+                            raw_snippet = item[1]
+
+                parsed_hdr = email_lib.message_from_bytes(raw_header)
+                subject = _decode_mime_header(parsed_hdr.get("Subject", ""))
+                sender, sender_name = _parse_email_address(parsed_hdr.get("From", ""))
+                to_addr, _ = _parse_email_address(parsed_hdr.get("To", ""))
+                date_str = parsed_hdr.get("Date", "")
+                raw_msg_id = (parsed_hdr.get("Message-ID") or "").strip("<> ").strip()
+
+                snippet_text = _clean_raw_snippet(raw_snippet)
+
+                combined_check = f"{subject} {sender} {sender_name} {snippet_text}".lower()
+                if not recruitment_patterns.search(combined_check):
+                    continue
+
+                msg_id = f"insa_{raw_msg_id or uid}"
+                _IMAP_MSG_MAP[msg_id] = ("insa", uid, "INBOX")
+
+                results[msg_id] = {
+                    "id": msg_id,
+                    "thread_id": None,
+                    "subject": subject,
+                    "sender": sender,
+                    "sender_name": sender_name,
+                    "date": date_str,
+                    "snippet": snippet_text or subject,
+                    "body": "",
+                    "to": to_addr,
+                    "source": "insa",
+                }
+
+                if len(results) >= limit:
+                    break
+            except Exception as e:
+                log.debug("Erreur parsing email INSA UID %s: %s", uid, e)
+                continue
+
+    finally:
+        try:
+            client.logout()
+        except Exception:
+            pass
+
+    return list(results.values())
 
 
 def _decode_mime_header(header_value: str | None) -> str:
@@ -327,7 +456,7 @@ def _imap_search_application_emails(days: int = 14, limit: int = 100) -> list[di
                             gm_thrid = format(int(m_th.group(1)), "x")
 
                 msg_id = gm_msgid or f"imap_{uid}"
-                _IMAP_MSG_MAP[msg_id] = (uid, folder)
+                _IMAP_MSG_MAP[msg_id] = ("gmail", uid, folder)
 
                 parsed_hdr = email_lib.message_from_bytes(raw_header)
                 subject = _decode_mime_header(parsed_hdr.get("Subject", ""))
@@ -367,67 +496,132 @@ def _imap_search_application_emails(days: int = 14, limit: int = 100) -> list[di
 
 
 def _imap_read_email_bodies(email_ids: list[str]) -> dict[str, dict]:
-    """Batch-read full email bodies for a list of email IDs via IMAP."""
+    """Batch-read full email bodies for a list of email IDs via IMAP (Gmail ou INSA)."""
     if not email_ids:
         return {}
 
-    client = _get_imap_client()
+    gmail_ids = []
+    insa_ids = []
+    for mid in email_ids:
+        info = _IMAP_MSG_MAP.get(mid)
+        if not info:
+            continue
+        acc = info[0] if len(info) == 3 else "gmail"
+        if acc == "insa":
+            insa_ids.append(mid)
+        else:
+            gmail_ids.append(mid)
+
     results: dict[str, dict] = {}
 
-    try:
-        current_folder = None
-        for msg_id in email_ids:
-            if msg_id not in _IMAP_MSG_MAP:
-                continue
-            uid, folder = _IMAP_MSG_MAP[msg_id]
-            if folder != current_folder:
-                client.select(folder, readonly=True)
-                current_folder = folder
-
-            try:
-                status, data = client.uid('fetch', uid, '(RFC822)')
-                if status != "OK" or not data:
-                    continue
-
-                raw_bytes = None
-                for item in data:
-                    if isinstance(item, tuple) and len(item) == 2:
-                        raw_bytes = item[1]
-                        break
-
-                if not raw_bytes:
-                    continue
-
-                full_msg = email_lib.message_from_bytes(raw_bytes)
-                body, snippet = _extract_body_and_snippet(full_msg)
-                subject = _decode_mime_header(full_msg.get("Subject", ""))
-                sender, sender_name = _parse_email_address(full_msg.get("From", ""))
-
-                results[msg_id] = {
-                    "id": msg_id,
-                    "thread_id": None,
-                    "subject": subject,
-                    "sender": sender,
-                    "sender_name": sender_name,
-                    "date": full_msg.get("Date", ""),
-                    "snippet": snippet,
-                    "body": body,
-                    "to": full_msg.get("To", ""),
-                }
-            except Exception as e:
-                log.warning("Failed to read IMAP body for %s: %s", msg_id, e)
-
-    finally:
+    # 1. Lecture Gmail
+    if gmail_ids:
         try:
-            client.logout()
-        except Exception:
-            pass
+            client = _get_imap_client()
+            try:
+                current_folder = None
+                for msg_id in gmail_ids:
+                    info = _IMAP_MSG_MAP[msg_id]
+                    uid = info[1] if len(info) == 3 else info[0]
+                    folder = info[2] if len(info) == 3 else info[1]
+                    if folder != current_folder:
+                        client.select(folder, readonly=True)
+                        current_folder = folder
+
+                    status, data = client.uid('fetch', uid, '(RFC822)')
+                    if status != "OK" or not data:
+                        continue
+
+                    raw_bytes = None
+                    for item in data:
+                        if isinstance(item, tuple) and len(item) == 2:
+                            raw_bytes = item[1]
+                            break
+                    if not raw_bytes:
+                        continue
+
+                    full_msg = email_lib.message_from_bytes(raw_bytes)
+                    body, snippet = _extract_body_and_snippet(full_msg)
+                    subject = _decode_mime_header(full_msg.get("Subject", ""))
+                    sender, sender_name = _parse_email_address(full_msg.get("From", ""))
+
+                    results[msg_id] = {
+                        "id": msg_id,
+                        "thread_id": None,
+                        "subject": subject,
+                        "sender": sender,
+                        "sender_name": sender_name,
+                        "date": full_msg.get("Date", ""),
+                        "snippet": snippet,
+                        "body": body,
+                        "to": full_msg.get("To", ""),
+                    }
+            finally:
+                try:
+                    client.logout()
+                except Exception:
+                    pass
+        except Exception as e:
+            log.warning("Erreur lecture IMAP Gmail : %s", e)
+
+    # 2. Lecture INSA
+    if insa_ids:
+        try:
+            insa_client = _get_insa_imap_client()
+            if insa_client:
+                try:
+                    insa_client.select("INBOX", readonly=True)
+                    for msg_id in insa_ids:
+                        info = _IMAP_MSG_MAP[msg_id]
+                        uid = info[1] if len(info) == 3 else info[0]
+
+                        status, data = insa_client.uid('fetch', uid, '(RFC822)')
+                        if status != "OK" or not data:
+                            continue
+
+                        raw_bytes = None
+                        for item in data:
+                            if isinstance(item, tuple) and len(item) == 2:
+                                raw_bytes = item[1]
+                                break
+                        if not raw_bytes:
+                            continue
+
+                        full_msg = email_lib.message_from_bytes(raw_bytes)
+                        body, snippet = _extract_body_and_snippet(full_msg)
+                        subject = _decode_mime_header(full_msg.get("Subject", ""))
+                        sender, sender_name = _parse_email_address(full_msg.get("From", ""))
+
+                        results[msg_id] = {
+                            "id": msg_id,
+                            "thread_id": None,
+                            "subject": subject,
+                            "sender": sender,
+                            "sender_name": sender_name,
+                            "date": full_msg.get("Date", ""),
+                            "snippet": snippet,
+                            "body": body,
+                            "to": full_msg.get("To", ""),
+                            "source": "insa",
+                        }
+                finally:
+                    try:
+                        insa_client.logout()
+                    except Exception:
+                        pass
+        except Exception as e:
+            log.warning("Erreur lecture IMAP INSA : %s", e)
 
     return results
 
 
 def _imap_apply_label(email_ids: list[str], label: str = "ap-track") -> int:
     """Apply a label to emails in Gmail via IMAP +X-GM-LABELS."""
+    if not email_ids:
+        return 0
+
+    # Seuls les messages Gmail supportent X-GM-LABELS
+    email_ids = [mid for mid in email_ids if _IMAP_MSG_MAP.get(mid, ("gmail",))[0] != "insa"]
     if not email_ids:
         return 0
 
@@ -732,25 +926,47 @@ async def verify_connection() -> bool:
 
 
 async def search_application_emails(days: int = 14, limit: int = 100) -> list[dict]:
-    """Search Gmail for application-related emails, returning metadata only.
-
-    Supports both IMAP SSL and MCP.
-
-    Args:
-        days: Look-back period in days.
-        limit: Maximum emails to return.
-
-    Returns:
-        List of normalized email dicts with subject, sender, date, snippet.
-    """
+    """Search Gmail & INSA for application-related emails, returning metadata only."""
     mode = get_auth_mode()
+    emails = []
+
+    # 1. Recherche sur Gmail (IMAP ou MCP)
     if mode == "imap":
-        return await asyncio.to_thread(_imap_search_application_emails, days, limit)
+        try:
+            gmail_res = await asyncio.to_thread(_imap_search_application_emails, days, limit)
+            emails.extend(gmail_res)
+        except Exception as e:
+            log.warning("Erreur lors de la recherche IMAP Gmail : %s", e)
     elif mode == "mcp":
-        return await _mcp_search_application_emails(days, limit)
-    else:
+        try:
+            mcp_res = await _mcp_search_application_emails(days, limit)
+            emails.extend(mcp_res)
+        except Exception as e:
+            log.warning("Erreur lors de la recherche MCP Gmail : %s", e)
+
+    # 2. Recherche sur la boîte INSA CVL (si configurée)
+    if insa_is_configured():
+        try:
+            insa_res = await asyncio.to_thread(_insa_search_application_emails, days, limit)
+            emails.extend(insa_res)
+        except Exception as e:
+            log.warning("Erreur lors de la recherche IMAP INSA : %s", e)
+
+    if not emails and mode == "none" and not insa_is_configured():
         ok, msg = check_gmail_setup()
         raise RuntimeError(msg)
+
+    # Tri par date décroissante (plus récents d'abord)
+    def _parse_date_sort(e: dict) -> float:
+        d = e.get("date") or ""
+        try:
+            from email.utils import parsedate_to_datetime
+            return parsedate_to_datetime(d).timestamp()
+        except Exception:
+            return 0.0
+
+    emails.sort(key=_parse_date_sort, reverse=True)
+    return emails[:limit]
 
 
 async def read_email_bodies(email_ids: list[str]) -> dict[str, dict]:
