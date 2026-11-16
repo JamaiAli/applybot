@@ -360,7 +360,7 @@ async def commandes_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "• <code>/offres [métier] [ville] [limite]</code> — Affiche les offres fraîches (≤ 7 jours, aujourd'hui en tête) prêtes en base (ex : <code>/offres soc</code>, <code>/offres Paris</code>)\n\n"
         "💼 <b>Jobs Étudiants & Intérim</b>\n"
         "• <code>/job [ville]</code> — Jobs étudiants et missions intérim en présentiel sur Indeed (Bourges par défaut, ou ex: /job Orléans)\n"
-        "• <code>/jobhellowork [ville]</code> — Jobs étudiants sur HelloWork (Bourges et ses alentours par défaut, ou ex: /jobhellowork Vierzon)\n"
+        "• <code>/jobhellowork [ville]</code> — Jobs étudiants & intérim sur HelloWork (Bourges & Saint-Doulchard par défaut, ou ex: /jobhellowork Vierzon)\n"
         "• <code>/jobdistant</code> — Jobs étudiants et missions intérim en 100% télétravail (France entière)\n\n"
         "📬 <b>Suivi Recruteurs & Boîte Gmail</b>\n"
         "• <code>/track [jours]</code> — Analyse ta boîte Gmail pour détecter et classifier les réponses recruteurs (défaut : 7 jours)\n"
@@ -1442,42 +1442,54 @@ async def jobdistant_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def jobhellowork_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Jobs étudiants sur HelloWork à Bourges et ses alentours (ou ville passée en paramètre).
+    """Jobs étudiants et missions intérim sur HelloWork à Bourges et Saint-Doulchard (ou ville passée en paramètre).
     Usage : /jobhellowork [ville]"""
     if not _authorized(update):
         return await _deny(update)
 
     raw_arg = " ".join(context.args).strip() if context.args else ""
-    if not raw_arg or raw_arg.lower() in ("bourges", "saint-doulchard", "saint doulchard", "doulchard"):
-        ville = "Bourges"
-        display_ville = "Bourges et alentours"
+    norm_arg = raw_arg.lower()
+    if not raw_arg or any(k in norm_arg for k in ("bourges", "saint-doulchard", "saint doulchard", "doulchard", "doulechard")):
+        villes = list(DEFAULT_JOB_LOCATIONS)
+        display_ville = DEFAULT_JOB_DISPLAY
     else:
-        ville = raw_arg
+        villes = [raw_arg]
         display_ville = raw_arg
 
     chat_id = update.effective_chat.id
     try:
         await context.bot.send_message(
             chat_id,
-            f"🔍 Recherche des <b>jobs étudiants</b> sur <b>HelloWork</b> à <b>{html.escape(display_ville)}</b>...",
+            f"🔍 Recherche des <b>jobs étudiants</b> et <b>missions intérim</b> sur <b>HelloWork</b> à <b>{html.escape(display_ville)}</b>…",
             parse_mode=ParseMode.HTML)
     except Exception as exc:
         log.warning("Notification initiale jobhellowork_cmd : %s", exc)
 
     from applypilot.discovery import hellowork
 
-    jobs = []
+    # 1. Jobs étudiants HelloWork
+    etu = []
     try:
-        jobs = await asyncio.to_thread(hellowork.search_hellowork_student_jobs, ville, 12, 14)
+        etu = await asyncio.to_thread(hellowork.search_hellowork_student_jobs, villes, 10, 14)
     except Exception as exc:
         log.warning("Jobs étudiants HelloWork échoués : %s", exc)
 
+    # 2. Missions intérim HelloWork
+    inter = []
     try:
-        await _send_job_list(context.bot, chat_id, f"🎓 Jobs étudiants (HelloWork) — {display_ville}", jobs[:12])
+        inter = await asyncio.to_thread(hellowork.search_hellowork_interim_jobs, villes, 10, 14)
+    except Exception as exc:
+        log.warning("Missions intérim HelloWork échouées : %s", exc)
+
+    try:
+        if etu:
+            await _send_job_list(context.bot, chat_id, f"🎓 Jobs étudiants (HelloWork) — {display_ville}", etu[:10])
+        if inter:
+            await _send_job_list(context.bot, chat_id, f"🛠️ Missions intérim (HelloWork) — {display_ville}", inter[:10])
     except Exception as exc:
         log.warning("Envoi job_list HelloWork échoué : %s", exc)
 
-    if not jobs:
+    if not etu and not inter:
         try:
             await context.bot.send_message(
                 chat_id,

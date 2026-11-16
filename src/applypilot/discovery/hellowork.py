@@ -360,23 +360,31 @@ STUDENT_QUERIES = [
     "restauration rapide",
 ]
 
+INTERIM_QUERIES = [
+    "",
+    "intérim",
+    "manutentionnaire",
+    "préparateur de commandes",
+    "magasinier",
+    "inventaire",
+    "employé libre-service",
+    "ouvrier polyvalent",
+    "agent de conditionnement",
+]
 
-def search_hellowork_student_jobs(
+
+def _search_hellowork_generic(
     location: str | list[str] = "Bourges",
+    queries: list[str] | None = None,
+    contract: str = "",
     limit: int = 15,
     max_age_days: int = 14,
-    queries: list[str] | None = None,
 ) -> list[dict]:
-    """Recherche les jobs étudiants et temps partiel sur HelloWork.
-
-    Filtre les stages/alternances, les professions hautement qualifiées/médicales,
-    et les offres déjà décidées ou postulées. Trie par fraîcheur (offres du jour
-    en tête, puis les plus récentes).
-    """
+    """Recherche générique filtrée et dédupliquée sur HelloWork (jobs étudiants ou intérim)."""
     from applypilot import bot_core
 
     locs = [location] if isinstance(location, str) else list(location)
-    target_queries = queries or STUDENT_QUERIES
+    target_queries = queries or [""]
     seen_urls: set[str] = set()
     seen_keys: set[tuple] = set()
     offers: list[dict] = []
@@ -385,7 +393,11 @@ def search_hellowork_student_jobs(
         with httpx.Client(follow_redirects=True) as client:
             for loc in locs:
                 for q in target_queries:
-                    params = {"st": "date", "k": q, "l": loc}
+                    params = {"st": "date", "l": loc}
+                    if q:
+                        params["k"] = q
+                    if contract:
+                        params["c"] = contract
                     try:
                         r = client.get(SEARCH_URL, params=params, headers=_HEADERS, timeout=15)
                         if r.status_code != 200:
@@ -461,9 +473,9 @@ def search_hellowork_student_jobs(
                                 "source": "hellowork",
                             })
                     except Exception as exc:
-                        log.debug("HelloWork student query %r (loc=%r) : %s", q, loc, exc)
+                        log.debug("HelloWork query %r (loc=%r, contract=%r) : %s", q, loc, contract, exc)
     except Exception as exc:
-        log.warning("HelloWork search_hellowork_student_jobs exception: %s", exc)
+        log.warning("HelloWork _search_hellowork_generic exception: %s", exc)
 
     def _sort_key(x):
         age = x.get("anciennete_jours")
@@ -474,3 +486,35 @@ def search_hellowork_student_jobs(
 
     offers.sort(key=_sort_key)
     return offers[:limit] if limit and limit > 0 else offers
+
+
+def search_hellowork_student_jobs(
+    location: str | list[str] = "Bourges",
+    limit: int = 15,
+    max_age_days: int = 14,
+    queries: list[str] | None = None,
+) -> list[dict]:
+    """Recherche les jobs étudiants et temps partiel sur HelloWork."""
+    return _search_hellowork_generic(
+        location=location,
+        queries=queries or STUDENT_QUERIES,
+        contract="",
+        limit=limit,
+        max_age_days=max_age_days,
+    )
+
+
+def search_hellowork_interim_jobs(
+    location: str | list[str] = "Bourges",
+    limit: int = 15,
+    max_age_days: int = 14,
+    queries: list[str] | None = None,
+) -> list[dict]:
+    """Recherche les missions INTÉRIM sur HelloWork."""
+    return _search_hellowork_generic(
+        location=location,
+        queries=queries or INTERIM_QUERIES,
+        contract="Travail_temp",
+        limit=limit,
+        max_age_days=max_age_days,
+    )

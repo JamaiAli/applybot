@@ -5,6 +5,7 @@ import pytest
 
 from applypilot.discovery.hellowork import (
     search_hellowork_student_jobs,
+    search_hellowork_interim_jobs,
     EXCLU_STAGE_RE,
     EXCLU_QUALIF_RE,
 )
@@ -96,8 +97,41 @@ def test_search_hellowork_student_jobs_parsing():
             assert jobs[1]["anciennete_jours"] == 1
 
 
+def test_search_hellowork_interim_jobs_parsing():
+    fake_html = """
+    <ul>
+      <li data-cy="offer-card">
+        <a href="/fr-fr/emplois/987654.html" title="Manutentionnaire H/F - Triangle Intérim"
+           aria-label="Voir offre de Manutentionnaire H/F à Bourges - 18, chez Triangle Intérim">
+          Manutentionnaire H/F - Triangle Intérim
+        </a>
+        <div class="meta">
+          <span>Bourges - 18</span>
+          <span>aujourd'hui</span>
+        </div>
+      </li>
+    </ul>
+    """
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.text = fake_html
+
+    with patch("httpx.Client") as mock_client_cls:
+        mock_client = MagicMock()
+        mock_client.__enter__.return_value = mock_client
+        mock_client.get.return_value = mock_resp
+        mock_client_cls.return_value = mock_client
+
+        with patch("applypilot.bot_core.is_job_decided", return_value=False):
+            jobs = search_hellowork_interim_jobs(location="Bourges", limit=5, max_age_days=14, queries=["manutentionnaire"])
+            assert len(jobs) == 1
+            assert jobs[0]["title"] == "Manutentionnaire H/F"
+            assert jobs[0]["employer_name"] == "Triangle Intérim"
+
+
 @pytest.mark.anyio
-async def test_jobhellowork_cmd_default_bourges():
+async def test_jobhellowork_cmd_default_bourges_and_saint_doulchard():
     update = SimpleNamespace(
         effective_chat=SimpleNamespace(id=123),
         message=SimpleNamespace(reply_text=AsyncMock()),
@@ -107,7 +141,7 @@ async def test_jobhellowork_cmd_default_bourges():
         bot=SimpleNamespace(send_message=AsyncMock()),
     )
 
-    mock_jobs = [
+    mock_etu = [
         {
             "url": "https://www.hellowork.com/fr-fr/emplois/123.html",
             "title": "Employé polyvalent",
@@ -117,19 +151,37 @@ async def test_jobhellowork_cmd_default_bourges():
             "anciennete_jours": 0,
         }
     ]
+    mock_interim = [
+        {
+            "url": "https://www.hellowork.com/fr-fr/emplois/456.html",
+            "title": "Manutentionnaire",
+            "employer_name": "Adecco",
+            "location": "Saint-Doulchard",
+            "posted_at": "2026-11-13T10:00",
+            "anciennete_jours": 0,
+        }
+    ]
 
     with patch.object(telegram_bot, "_authorized", return_value=True), \
-         patch("applypilot.discovery.hellowork.search_hellowork_student_jobs", return_value=mock_jobs) as mock_search, \
+         patch("applypilot.discovery.hellowork.search_hellowork_student_jobs", return_value=mock_etu) as mock_search_etu, \
+         patch("applypilot.discovery.hellowork.search_hellowork_interim_jobs", return_value=mock_interim) as mock_search_interim, \
          patch.object(telegram_bot, "_send_job_list", new_callable=AsyncMock) as mock_send_list:
 
         await telegram_bot.jobhellowork_cmd(update, context)
 
-        mock_search.assert_called_once_with("Bourges", 12, 14)
-        mock_send_list.assert_called_once()
-        titre = mock_send_list.call_args[0][2]
-        assert "HelloWork" in titre
-        assert "Bourges et alentours" in titre
-        assert len(mock_send_list.call_args[0][3]) == 1
+        mock_search_etu.assert_called_once_with(["Bourges", "Saint-Doulchard"], 10, 14)
+        mock_search_interim.assert_called_once_with(["Bourges", "Saint-Doulchard"], 10, 14)
+        assert mock_send_list.call_count == 2
+        
+        # 1ère liste : jobs étudiants
+        titre_etu = mock_send_list.call_args_list[0][0][2]
+        assert "Jobs étudiants" in titre_etu
+        assert "Bourges & Saint-Doulchard" in titre_etu
+
+        # 2ème liste : missions intérim
+        titre_interim = mock_send_list.call_args_list[1][0][2]
+        assert "Missions intérim" in titre_interim
+        assert "Bourges & Saint-Doulchard" in titre_interim
 
 
 @pytest.mark.anyio
@@ -144,13 +196,15 @@ async def test_jobhellowork_cmd_custom_city():
     )
 
     with patch.object(telegram_bot, "_authorized", return_value=True), \
-         patch("applypilot.discovery.hellowork.search_hellowork_student_jobs", return_value=[]) as mock_search, \
+         patch("applypilot.discovery.hellowork.search_hellowork_student_jobs", return_value=[]) as mock_search_etu, \
+         patch("applypilot.discovery.hellowork.search_hellowork_interim_jobs", return_value=[]) as mock_search_interim, \
          patch.object(telegram_bot, "_send_job_list", new_callable=AsyncMock) as mock_send_list:
 
         await telegram_bot.jobhellowork_cmd(update, context)
 
-        mock_search.assert_called_once_with("Vierzon", 12, 14)
-        mock_send_list.assert_called_once()
+        mock_search_etu.assert_called_once_with(["Vierzon"], 10, 14)
+        mock_search_interim.assert_called_once_with(["Vierzon"], 10, 14)
+        mock_send_list.assert_not_called()
         # Fallback message sent when empty
         assert context.bot.send_message.call_count >= 2
         last_msg = context.bot.send_message.call_args_list[-1][0][1]
