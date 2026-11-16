@@ -216,7 +216,7 @@ def _clean_html(raw: str | None) -> str | None:
 # --------------------------------------------------------------------------- #
 # Logique pure : filtrage + tagging + normalisation (testable sans réseau)
 # --------------------------------------------------------------------------- #
-def filter_and_tag(records: list[dict], keep_alt: bool = False) -> list[dict]:
+def filter_and_tag(records: list[dict], keep_alt: bool = False, filter_cyber: bool = True) -> list[dict]:
     """Garde les offres « stage » ET « bien cyber », et calcule leurs domaines.
 
     `records` : liste de ``{"job": <dict Indeed>, "domaines_req": [domaine, …]}``
@@ -236,13 +236,14 @@ def filter_and_tag(records: list[dict], keep_alt: bool = False) -> list[dict]:
 
         title_domains = [d for d, rx in DOMAIN_RES.items() if rx.search(title)]
         strong_title_domains = [d for d in title_domains if d not in WEAK_DOMAINS]
-        if not CORE_RE.search(text) and not strong_title_domains:
+        if filter_cyber and not CORE_RE.search(text) and not strong_title_domains:
             continue  # hors cyber
 
         domaines = classify_domains(text)
+        default_dom = "Stage Luxembourg" if not filter_cyber else "Généraliste cyber"
         principal = (strong_title_domains[0] if strong_title_domains
                      else (domaines_req[0] if domaines_req
-                           else (domaines[0] if domaines else "Généraliste cyber")))
+                           else (domaines[0] if domaines else default_dom)))
         kept.append({"domaine_principal": principal, "domaines": domaines, "job": job})
     return kept
 
@@ -262,9 +263,14 @@ def normalize_offer(record: dict) -> dict:
     company_name = comp.get("name") if isinstance(comp, dict) else comp
     loc = job.get("location") or {}
     if isinstance(loc, dict):
-        location = loc.get("display_name") or loc.get("city")
+        disp = loc.get("display_name") or loc.get("city") or ""
+        country = loc.get("country") or ""
+        if country and country.lower() == "luxembourg" and "luxembourg" not in disp.lower():
+            location = f"{disp}, Luxembourg" if disp else "Luxembourg"
+        else:
+            location = disp or country or "Luxembourg"
     else:
-        location = loc
+        location = str(loc or "")
     url = job.get("link") or job.get("id")
     full_desc = _clean_html(job.get("description"))
     # Date de publication via le parseur robuste partagé (ISO/timestamp/relatif).
@@ -356,8 +362,10 @@ def _search_all(jobs_mod, query: str, location: str, pages: int,
     """Toutes les offres d'une requête, sur `pages` pages (rythme lent)."""
     out: list[dict] = []
     seen: set = set()
+    is_lux = bool(location and any(k in location.lower() for k in ("luxembourg", "lux", "lu")))
+    country = "LU" if is_lux else "FR"
     for page in range(1, pages + 1):
-        kwargs = {"query": query, "location": location, "country": "FR"}
+        kwargs = {"query": query, "location": location, "country": country}
         if page_kw:
             kwargs[page_kw] = page
         elif page > 1:
@@ -446,7 +454,9 @@ def run_indeed_discovery(workers: int = 1, dry_run: bool = False,
         return {"found": 0, "new": 0, "existing": 0, "offers": [],
                 "errors": [str(e)], "skipped": "scrape_failed"}
 
-    kept = filter_and_tag(records, keep_alt=keep_alt)
+    is_lux = bool(location and any(k in location.lower() for k in ("luxembourg", "lux", "lu")))
+    filter_cyber = False if is_lux else True
+    kept = filter_and_tag(records, keep_alt=keep_alt, filter_cyber=filter_cyber)
     offers = [normalize_offer(r) for r in kept]
 
     # Filtre d'ancienneté (offres trop vieilles ignorées ; sans date = gardées).
