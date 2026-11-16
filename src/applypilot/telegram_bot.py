@@ -612,6 +612,12 @@ async def clean_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def _send_job_list(bot, chat_id: int, titre: str, jobs: list[dict]) -> None:
     """Envoie chaque job (étudiant / intérim) en message séparé AVEC un bouton
     « 🚀 Postuler » (pré-remplit le formulaire + CV job étudiant sur le PC)."""
+    # Exclure les offres déjà postulées ou ignorées
+    jobs = [
+        j for j in jobs
+        if not (j.get("url") and bot_core.is_job_decided(j.get("url"), j.get("title", ""), j.get("employer_name", "")))
+    ]
+
     if not jobs:
         await bot.send_message(chat_id, f"{titre} : aucune offre de moins d'une semaine trouvée.")
         return
@@ -641,6 +647,7 @@ async def _send_job_list(bot, chat_id: int, titre: str, jobs: list[dict]) -> Non
         kb = InlineKeyboardMarkup([[
             InlineKeyboardButton("🚀 Postuler", callback_data=f"jobapply:{h}"),
             InlineKeyboardButton("Voir l'offre", url=j["url"]),
+            InlineKeyboardButton("❌ Ignorer", callback_data=f"no:{h}"),
         ]])
         msg = await bot.send_message(chat_id, txt, parse_mode=ParseMode.HTML,
                                      reply_markup=kb, disable_web_page_preview=True)
