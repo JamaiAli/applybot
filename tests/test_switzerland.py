@@ -113,3 +113,29 @@ async def test_send_stage_list_creates_stage_cards_not_student_jobs():
         assert not any(cb.startswith("jobapply:") for cb in button_callbacks)
         assert any(b.url == "https://swissdevjobs.ch/jobs/kpmg-cyber" for b in all_buttons)
 
+
+def test_cyber_filter_strictly_keeps_cyber_internships():
+    """Vérifie que seuls les vrais stages en cybersécurité passent le filtre et sont dédupliqués."""
+    from applypilot.discovery.cyber_filter import filter_cyber_internships
+
+    raw = [
+        {"url": "https://a/1", "title": "Cyber Security Intern", "employer_name": "CHANEL"},
+        {"url": "https://a/2", "title": "Graduate - Cyber Security - Full Time", "employer_name": "KPMG"},
+        {"url": "https://a/3", "title": "Graduate - Cyber Security", "employer_name": "KPMG"},  # doublon
+        {"url": "https://a/4", "title": "Stagiaire Administrateur Microsoft 365 & Entra ID", "employer_name": "Consort Group"},
+        {"url": "https://a/5", "title": "Stagiaire RH gestion des processus", "employer_name": "Assura"},  # hors cyber
+        {"url": "https://a/6", "title": "Stage en psychologie de la santé", "employer_name": "HUG"},  # hors cyber
+        {"url": "https://a/7", "title": "Apprentissage Horloger CFC", "employer_name": "Audemars"},  # apprentissage
+        {"url": "https://a/8", "title": "Agent de sécurité Manifestation", "employer_name": "Securitas"},  # sécurité physique
+        {"url": "https://a/9", "title": "Cyber Security Engineer (CDI)", "employer_name": "RUAG"},  # pas un stage
+        {"url": "https://a/10", "title": "Internrevisor med fokus på IT", "employer_name": "Försvarsmakten"},  # faux ami suédois
+    ]
+
+    kept = filter_cyber_internships(raw)
+    titles = [o["title"] for o in kept]
+    assert len(kept) == 3
+    assert "Cyber Security Intern" in titles
+    assert "Graduate - Cyber Security - Full Time" in titles
+    assert "Stagiaire Administrateur Microsoft 365 & Entra ID" in titles
+
+

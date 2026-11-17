@@ -127,3 +127,109 @@ def run_moovijob_discovery(queries: list[str] | dict | None = None, limit: int =
     new, existing = insert_normalized_jobs(conn, offers, DEFAULT_SITE, STRATEGY)
     log.info("Moovijob terminé : %d retenu(s) (%d new, %d existing)", len(offers), new, existing)
     return {"found": len(offers), "new": new, "existing": existing, "offers": offers, "errors": []}
+
+
+def scrape_ictjob_lu(query: str | None = None, limit: int = 10) -> list[dict]:
+    """Scrape les stages IT / cybersécurité sur ICTjob.lu (spécialiste IT Luxembourg)."""
+    import subprocess
+    import urllib.parse
+    from applypilot.discovery.cyber_filter import filter_cyber_internships
+
+    kw = f"stage {query.strip()}" if (query and query.strip()) else "stage"
+    url = f"https://www.ictjob.lu/fr/chercher-emplois-it?keywords={urllib.parse.quote(kw)}"
+    try:
+        proc = subprocess.run(
+            ["curl.exe", "-s", "-L", "--max-time", "8", url],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+        )
+        html = proc.stdout or ""
+    except Exception as exc:
+        log.warning("ICTjob.lu indisponible : %s", exc)
+        return []
+
+    soup = BeautifulSoup(html, "html.parser")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    raw_offers: list[dict] = []
+
+    for item in soup.select("li.search-item, .search-item"):
+        a = item.select_one("a.job-title, h2 a")
+        if not a:
+            continue
+        title = a.get_text(strip=True)
+        href = a.get("href") or ""
+        if not title or not href:
+            continue
+        if not href.startswith("http"):
+            href = "https://www.ictjob.lu" + href
+
+        co_el = item.select_one(".job-company, .company")
+        company = co_el.get_text(strip=True) if co_el else "Entreprise IT Luxembourg"
+        loc_el = item.select_one(".job-location, .location")
+        loc = loc_el.get_text(strip=True) if loc_el else "Luxembourg"
+        if "luxembourg" not in loc.lower():
+            loc = f"{loc}, Luxembourg"
+
+        raw_offers.append({
+            "url": href,
+            "title": title,
+            "employer_name": company,
+            "location": loc,
+            "posted_at": now_iso,
+            "source": "ictjob.lu",
+            "contract": "Stage",
+        })
+
+    return filter_cyber_internships(raw_offers, custom_query=query, limit=limit)
+
+
+def scrape_luxembourg_cyber_offers(query: str | None = None, limit: int = 12) -> list[dict]:
+    """Récupère les stages en CYBERSÉCURITÉ au Luxembourg (ICTjob.lu + Moovijob + LinkedIn LU)."""
+    from applypilot.discovery.cyber_filter import (
+        filter_cyber_internships,
+        norm_text,
+        scrape_jobspy_cyber_internships,
+    )
+
+    all_raw: list[dict] = []
+
+    # 1. ICTjob.lu (portail IT & Cyber Luxembourg, très rapide)
+    try:
+        all_raw.extend(scrape_ictjob_lu(query=query, limit=limit))
+    except Exception as exc:
+        log.warning("ICTjob.lu erreur : %s", exc)
+
+    # 2. Moovijob (stages filtrés cyber)
+    try:
+        moovi_q = query if (query and query.strip()) else "cyber"
+        moovi_raw = scrape_moovijob_offers(query=moovi_q, limit=limit)
+        for o in moovi_raw:
+            o.setdefault("contract", "Stage")
+        all_raw.extend(moovi_raw)
+    except Exception as exc:
+        log.warning("Moovijob erreur : %s", exc)
+
+    # 3. LinkedIn Luxembourg (sans Indeed, conformément à la demande utilisateur)
+    q_clean = (query or "").strip()
+    if q_clean and norm_text(q_clean) not in ("cyber", "cybersecurite", "cybersecurity", "stage"):
+        jobspy_queries = [f"{q_clean} intern", f"stage {q_clean}"]
+    else:
+        jobspy_queries = ["cybersecurity intern", "stage cybersécurité"]
+
+    try:
+        all_raw.extend(
+            scrape_jobspy_cyber_internships(
+                country="Luxembourg",
+                country_fr="Luxembourg",
+                queries=jobspy_queries,
+                sites=["linkedin"],
+                limit=limit,
+            )
+        )
+    except Exception as exc:
+        log.warning("LinkedIn Luxembourg erreur : %s", exc)
+
+    return filter_cyber_internships(all_raw, custom_query=query, limit=limit)
+

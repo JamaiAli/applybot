@@ -596,23 +596,23 @@ async def luxembourg_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     cible_txt = f" ({html.escape(metier_arg)})" if metier_arg else ""
     await context.bot.send_message(
         chat_id,
-        f"🇱🇺 <b>Stages au Luxembourg</b>\n\n🔎 Scan en direct sur <b>Moovijob</b> (N°1 au Luxembourg){cible_txt}…",
+        f"🇱🇺 <b>Stages Cybersécurité au Luxembourg</b>\n\n🔎 Scan en direct (<b>ICTjob.lu</b>, <b>Moovijob</b> & <b>LinkedIn LU</b>){cible_txt}…",
         parse_mode=ParseMode.HTML
     )
 
     from applypilot.discovery import moovijob
     try:
-        offers = await asyncio.to_thread(moovijob.scrape_moovijob_offers, query=metier_arg, limit=MAX_CARDS)
+        offers = await asyncio.to_thread(moovijob.scrape_luxembourg_cyber_offers, query=metier_arg, limit=max(MAX_CARDS, 10))
     except Exception as exc:
-        log.warning("Erreur scraping Moovijob : %s", exc)
+        log.warning("Erreur scraping Luxembourg : %s", exc)
         offers = []
 
     if offers:
-        await _send_stage_list(context.bot, chat_id, f"🇱🇺 Offres de stage Moovijob Luxembourg{cible_txt}", offers)
+        await _send_stage_list(context.bot, chat_id, f"🇱🇺 Stages Cybersécurité au Luxembourg{cible_txt}", offers)
     else:
         await context.bot.send_message(
             chat_id,
-            f"⚠️ Aucune offre trouvée directement sur Moovijob pour <i>{html.escape(metier_arg or 'stage')}</i>.",
+            f"⚠️ Aucun stage cybersécurité trouvé en direct pour <i>{html.escape(metier_arg or 'cybersécurité')}</i>.",
             parse_mode=ParseMode.HTML
         )
 
@@ -645,23 +645,23 @@ async def suisse_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     cible_txt = f" ({html.escape(metier_arg)})" if metier_arg else ""
     await context.bot.send_message(
         chat_id,
-        f"🇨🇭 <b>Stages en Suisse</b>\n\n🔎 Scan en direct sur <b>Jobup.ch</b> (N°1 en Suisse romande) & <b>SwissDevJobs</b>{cible_txt}…",
+        f"🇨🇭 <b>Stages Cybersécurité en Suisse</b>\n\n🔎 Scan en direct (<b>Jobs.ch</b>, <b>Jobup</b>, <b>SwissDevJobs</b> & flux cyber CH){cible_txt}…",
         parse_mode=ParseMode.HTML
     )
 
     from applypilot.discovery import switzerland
     try:
-        offers = await asyncio.to_thread(switzerland.scrape_swiss_offers, query=metier_arg, limit=MAX_CARDS)
+        offers = await asyncio.to_thread(switzerland.scrape_swiss_offers, query=metier_arg, limit=max(MAX_CARDS, 10))
     except Exception as exc:
         log.warning("Erreur scraping Suisse : %s", exc)
         offers = []
 
     if offers:
-        await _send_stage_list(context.bot, chat_id, f"🇨🇭 Offres de stage en Suisse (Jobup & SwissDevJobs){cible_txt}", offers)
+        await _send_stage_list(context.bot, chat_id, f"🇨🇭 Stages Cybersécurité en Suisse{cible_txt}", offers)
     else:
         await context.bot.send_message(
             chat_id,
-            f"⚠️ Aucune offre trouvée directement sur Jobup pour <i>{html.escape(metier_arg or 'stage')}</i>.",
+            f"⚠️ Aucun stage cybersécurité trouvé en direct pour <i>{html.escape(metier_arg or 'cybersécurité')}</i>.",
             parse_mode=ParseMode.HTML
         )
 
@@ -693,23 +693,23 @@ async def suede_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     cible_txt = f" ({html.escape(metier_arg)})" if metier_arg else ""
     await context.bot.send_message(
         chat_id,
-        f"🇸🇪 <b>Stages en Suède</b>\n\n🔎 Scan en direct sur <b>Platsbanken</b> (N°1 en Suède — Arbetsförmedlingen){cible_txt}…",
+        f"🇸🇪 <b>Stages Cybersécurité en Suède</b>\n\n🔎 Scan en direct (<b>Platsbanken</b>, <b>LinkedIn SE</b> & <b>Indeed SE</b>){cible_txt}…",
         parse_mode=ParseMode.HTML
     )
 
     from applypilot.discovery import sweden
     try:
-        offers = await asyncio.to_thread(sweden.scrape_platsbanken_offers, query=metier_arg, limit=MAX_CARDS)
+        offers = await asyncio.to_thread(sweden.scrape_sweden_offers, query=metier_arg, limit=max(MAX_CARDS, 10))
     except Exception as exc:
         log.warning("Erreur scraping Suède : %s", exc)
         offers = []
 
     if offers:
-        await _send_stage_list(context.bot, chat_id, f"🇸🇪 Offres de stage en Suède (Platsbanken){cible_txt}", offers)
+        await _send_stage_list(context.bot, chat_id, f"🇸🇪 Stages Cybersécurité en Suède{cible_txt}", offers)
     else:
         await context.bot.send_message(
             chat_id,
-            f"⚠️ Aucune offre trouvée directement sur Platsbanken pour <i>{html.escape(metier_arg or 'stage')}</i>.",
+            f"⚠️ Aucun stage cybersécurité trouvé en direct pour <i>{html.escape(metier_arg or 'cybersécurité')}</i>.",
             parse_mode=ParseMode.HTML
         )
 

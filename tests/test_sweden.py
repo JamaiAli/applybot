@@ -33,16 +33,13 @@ def test_platsbanken_parsing():
         mock_get.return_value.json.return_value = sample_response
 
         res = sweden.scrape_platsbanken_offers(query=None, limit=10)
-        assert len(res) == 2
-        assert res[0]["title"] == "Internship Logistics Procurement Planning"
-        assert res[0]["employer_name"] == "Bosch Thermoteknik AB"
-        assert "Tranås, Suède" in res[0]["location"]
+        # Seul le stage cybersécurité doit être conservé (la logistique est écartée)
+        assert len(res) == 1
+        assert res[0]["title"] == "Cyber Security Trainee"
+        assert res[0]["employer_name"] == "Ericsson AB"
+        assert "Stockholm, Suède" in res[0]["location"]
         assert res[0]["source"] == "platsbanken"
-        assert "31723959" in res[0]["url"]
-
-        assert res[1]["title"] == "Cyber Security Trainee"
-        assert res[1]["employer_name"] == "Ericsson AB"
-        assert "Stockholm, Suède" in res[1]["location"]
+        assert "31693185" in res[0]["url"]
 
 
 @pytest.mark.anyio
@@ -67,7 +64,7 @@ async def test_suede_cmd():
     }]
 
     with patch.object(telegram_bot, "_authorized", return_value=True), \
-         patch("applypilot.discovery.sweden.scrape_platsbanken_offers", return_value=sample_offers), \
+         patch("applypilot.discovery.sweden.scrape_sweden_offers", return_value=sample_offers), \
          patch.object(telegram_bot, "_send_stage_list", new_callable=AsyncMock) as mock_send_list:
 
         await telegram_bot.suede_cmd(update, context)

@@ -92,7 +92,7 @@ async def test_luxembourg_cmd():
     }]
 
     with patch.object(telegram_bot, "_authorized", return_value=True), \
-         patch("applypilot.discovery.moovijob.scrape_moovijob_offers", return_value=sample_offers), \
+         patch("applypilot.discovery.moovijob.scrape_luxembourg_cyber_offers", return_value=sample_offers), \
          patch.object(telegram_bot, "_send_stage_list", new_callable=AsyncMock) as mock_send_list:
 
         await telegram_bot.luxembourg_cmd(update, context)
