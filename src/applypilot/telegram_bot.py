@@ -551,6 +551,9 @@ async def search_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not _authorized(update):
         return await _deny(update)
     metier, city, limit = _parse_search_args(context.args, MAX_CARDS)
+    if city and any(k in city.lower() for k in ("luxembourg", "lux")):
+        context.args = [metier] if metier else []
+        return await luxembourg_cmd(update, context)
     n = await _run_search_and_post(context.bot, update.effective_chat.id, limit, do_search=True, city=city, metier=metier)
     cible_txt = f" ({metier.upper()})" if metier else ""
     ville_txt = f" à {city}" if city else ""
@@ -579,13 +582,28 @@ async def luxembourg_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     metier_arg = " ".join(context.args).strip() if context.args else None
     chat_id = update.effective_chat.id
 
-    msg_intro = (
-        "🇱🇺 <b>Stages au Luxembourg</b>\n\n"
-        "🔎 Scan en direct des offres de stage sur <b>Moovijob</b> (N°1 de l'emploi & stages au Luxembourg)…"
+    cible_txt = f" ({html.escape(metier_arg)})" if metier_arg else ""
+    await context.bot.send_message(
+        chat_id,
+        f"🇱🇺 <b>Stages au Luxembourg</b>\n\n🔎 Scan en direct sur <b>Moovijob</b> (N°1 au Luxembourg){cible_txt}…",
+        parse_mode=ParseMode.HTML
     )
-    await context.bot.send_message(chat_id, msg_intro, parse_mode=ParseMode.HTML)
 
-    n = await _run_search_and_post(context.bot, chat_id, MAX_CARDS, do_search=True, city="Luxembourg", metier=metier_arg)
+    from applypilot.discovery import moovijob
+    try:
+        offers = await asyncio.to_thread(moovijob.scrape_moovijob_offers, query=metier_arg, limit=MAX_CARDS)
+    except Exception as exc:
+        log.warning("Erreur scraping Moovijob : %s", exc)
+        offers = []
+
+    if offers:
+        await _send_job_list(context.bot, chat_id, f"🇱🇺 Offres de stage Moovijob Luxembourg{cible_txt}", offers)
+    else:
+        await context.bot.send_message(
+            chat_id,
+            f"⚠️ Aucune offre trouvée directement sur Moovijob pour <i>{html.escape(metier_arg or 'stage')}</i>.",
+            parse_mode=ParseMode.HTML
+        )
 
     portails_msg = (
         "🌐 <b>Portails de recrutement incontournables au Luxembourg :</b>\n\n"
@@ -600,7 +618,7 @@ async def luxembourg_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         "• 🏛️ <a href=\"https://adem.public.lu\"><b>ADEM</b></a> — Service public de l'emploi (Intérêt : Élevé)\n"
         "• 🏢 <a href=\"https://govjobs.public.lu\"><b>GovJobs</b></a> — Fonction publique (Intérêt : Moyen)\n"
         "• 🌍 <a href=\"https://workinluxembourg.lu\"><b>Work in Luxembourg</b></a> — Recrutement international (Intérêt : Élevé)\n\n"
-        "💡 <i>Tu peux aussi filtrer avec <code>/luxembourg informatique</code> ou <code>/search cyber luxembourg</code>.</i>"
+        "💡 <i>Astuce : tu peux filtrer par mot-clé avec <code>/luxembourg informatique</code> ou <code>/luxembourg cyber</code>.</i>"
     )
     await context.bot.send_message(chat_id, portails_msg, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 

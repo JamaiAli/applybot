@@ -26,6 +26,8 @@ def test_check_gmail_setup_missing(monkeypatch):
         monkeypatch.delenv("GMAIL_EMAIL", raising=False)
         monkeypatch.delenv("GMAIL_APP_PASSWORD", raising=False)
         monkeypatch.delenv("GMAIL_PASSWORD", raising=False)
+        monkeypatch.delenv("INSA_EMAIL", raising=False)
+        monkeypatch.delenv("INSA_PASSWORD", raising=False)
 
         with patch("applypilot.tracking.gmail_client.OAUTH_KEYS_PATH") as mock_path:
             mock_path.exists.return_value = False

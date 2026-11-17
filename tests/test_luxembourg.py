@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from applypilot import telegram_bot
+from applypilot.discovery import moovijob
 from applypilot.discovery import indeed
 
 
@@ -72,7 +73,7 @@ def test_filter_and_tag_luxembourg_allows_all_internships():
 
 @pytest.mark.anyio
 async def test_luxembourg_cmd():
-    """Vérifie que la commande /luxembourg lance la recherche et diffuse les portails."""
+    """Vérifie que la commande /luxembourg lance le scraping rapide Moovijob et diffuse les portails."""
     update = SimpleNamespace(
         effective_chat=SimpleNamespace(id=987),
         message=SimpleNamespace(reply_text=AsyncMock()),
@@ -82,15 +83,21 @@ async def test_luxembourg_cmd():
         bot=SimpleNamespace(send_message=AsyncMock()),
     )
 
+    sample_offers = [{
+        "url": "https://www.moovijob.com/offres-emploi/bank/stage-it",
+        "title": "Stage IT",
+        "employer_name": "Banque de Luxembourg",
+        "location": "Luxembourg",
+        "posted_at": "2026-11-17T12:00:00",
+    }]
+
     with patch.object(telegram_bot, "_authorized", return_value=True), \
-         patch.object(telegram_bot, "_run_search_and_post", new_callable=AsyncMock, return_value=3) as mock_run:
+         patch("applypilot.discovery.moovijob.scrape_moovijob_offers", return_value=sample_offers), \
+         patch.object(telegram_bot, "_send_job_list", new_callable=AsyncMock) as mock_send_list:
 
         await telegram_bot.luxembourg_cmd(update, context)
 
-        mock_run.assert_called_once_with(
-            context.bot, 987, telegram_bot.MAX_CARDS, do_search=True, city="Luxembourg", metier=None
-        )
-        # Vérifie que les messages d'intro et de portails sont envoyés
+        mock_send_list.assert_called_once()
         assert context.bot.send_message.call_count >= 2
         portails_msg = context.bot.send_message.call_args_list[-1][0][1]
         assert "Moovijob" in portails_msg
@@ -100,9 +107,6 @@ async def test_luxembourg_cmd():
         assert "Paperjam" in portails_msg
         assert "ADEM" in portails_msg
 
-
-from unittest.mock import patch
-from applypilot.discovery import moovijob
 
 def test_moovijob_html_parsing():
     sample_html = """
