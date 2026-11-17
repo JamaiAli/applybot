@@ -153,12 +153,106 @@ def _dedup_key(title: str, employer: str) -> tuple[str, str]:
     return (t[:50], e[:25])
 
 
+# ---------------------------------------------------------------------------
+# Scoring rapide /10 aligné sur le profil candidat (AD/Entra ID, Cyber, Infra)
+# ---------------------------------------------------------------------------
+_SCORE_DOMAINS: list[tuple[str, str]] = [
+    ("AD / IAM", r"active directory|entra|entra id|azure ad|microsoft 365|m365|iam|pam|ldap|intune|cisco ise|access control|zero trust|identity"),
+    ("SOC / Blue team", r"soc|siem|csirt|cert|blue team|edr|xdr|splunk|qradar|sentinel|threat|incident|dfir|detection"),
+    ("Pentest / Offensive", r"pentest|pentester|red team|offensive|intrusion|vulnerabilit|schwachstellen|bug bounty|oscp|appsec|owasp"),
+    ("Réseau / Infra sécu", r"network|reseau|firewall|pare-feu|fortinet|palo alto|f5|vpn|ids|ips|nac|infra|system|observability"),
+    ("DevSecOps / Cloud", r"devsecops|devops|cloud|aws|azure|gcp|kubernetes|docker|terraform|ansible|automation|securing"),
+    ("GRC / Audit IT", r"grc|gouvernance|governance|iso 27001|27001|ebios|nis2|dora|risk|risque|audit|compliance|conformite|ciso|resilience|resiliens"),
+    ("Forensic / Malware", r"forensic|forensique|malware|reverse engineering|cryptograph|privacy"),
+]
+
+
+def score_cyber_stage(offer: dict) -> tuple[int, list[str], str]:
+    """Calcule instantanément (fit_score /10, domaines, reasoning) sans blocage LLM.
+
+    Barème aligné sur scorer.py (profil ingénieur INSA : Cybersécurité, AD/Entra ID,
+    Intégration IT, Réseau/Infra sécu, SOC, Pentest, GRC, DevSecOps).
+    """
+    title = offer.get("title") or ""
+    employer = offer.get("employer_name") or ""
+    desc = (offer.get("description") or "")[:1500]
+    t = norm_text(title)
+    full = f"{t} {norm_text(employer)} {norm_text(desc)}"
+
+    domains: list[str] = []
+    for label, pattern in _SCORE_DOMAINS:
+        if re.search(rf"(?<![a-z0-9])({pattern})(?![a-z0-9])", full):
+            domains.append(label)
+
+    has_core_cyber = bool(re.search(
+        r"(?<![a-z0-9])(cyber|cybersecurite|cybersecurity|infosec|information security|it security|ncsc|ciso|sakerhet|sicherheit)(?![a-z0-9])",
+        f"{t} {norm_text(employer)}",
+    ))
+    has_ad_iam = "AD / IAM" in domains
+    has_tech_sec = any(d in domains for d in ("SOC / Blue team", "Pentest / Offensive", "Réseau / Infra sécu", "DevSecOps / Cloud"))
+    has_grc_only = domains == ["GRC / Audit IT"]
+
+    # Base de score selon adéquation technique au profil
+    score = 7
+    if has_ad_iam:
+        score = 10
+    elif has_core_cyber and has_tech_sec:
+        score = 9
+    elif has_core_cyber:
+        score = 9
+    elif has_tech_sec:
+        score = 8
+    elif has_grc_only:
+        score = 8
+    elif domains:
+        score = 7
+
+    # Ajustement léger selon le format (stage direct vs working student / graduate)
+    is_direct_stage = bool(re.search(
+        r"(?<![a-z])(stage|stagiaire|intern|internship|praktik|praktikum|hochschulpraktikant|praticante|exjobb|thesis)(?![a-z])",
+        t,
+    ))
+    is_working_student = bool(re.search(r"(?<![a-z])(working student|werkstudent|studentische)(?![a-z])", t))
+    is_graduate = bool(re.search(r"(?<![a-z])(graduate|trainee)(?![a-z])", t)) and not is_direct_stage
+
+    notes: list[str] = []
+    if is_working_student:
+        score = max(6, score - 1)
+        notes.append("format Working Student (temps partiel à vérifier avec ta convention)")
+    elif is_graduate:
+        score = max(7, score - 1)
+        notes.append("format Graduate / Trainee (vérifier l'éligibilité stage PFE / pré-embauche)")
+
+    if not domains and has_core_cyber:
+        domains = ["Cybersécurité"]
+    elif not domains:
+        domains = ["Cybersécurité / IT"]
+
+    score = max(1, min(10, score))
+
+    # Génération d'une explication claire en français
+    dom_str = ", ".join(domains[:3])
+    if has_ad_iam:
+        reason = f"Très forte adéquation : stage ciblant directement {dom_str}, cœur de ton profil cybersécurité & intégration IT."
+    elif score >= 9:
+        reason = f"Excellent stage en cybersécurité ({dom_str}), parfaitement aligné avec ton profil ingénieur."
+    elif score == 8:
+        reason = f"Bon stage orienté {dom_str}, pertinent pour ton parcours cybersécurité."
+    else:
+        reason = f"Stage technique en lien avec {dom_str}."
+
+    if notes:
+        reason += " " + notes[0].capitalize() + "."
+
+    return score, domains, reason
+
+
 def filter_cyber_internships(
     offers: list[dict],
     custom_query: str | None = None,
     limit: int = 12,
 ) -> list[dict]:
-    """Filtre et déduplique une liste d'offres pour ne garder que les stages cybersécurité.
+    """Filtre, déduplique, note (/10) et trie une liste d'offres pour ne garder que les stages cybersécurité.
 
     Si custom_query est fourni (ex: 'pentest', 'grc', 'cloud', 'entra'),
     conserve les stages correspondant à ce mot-clé (en vérifiant qu'il s'agit bien d'un stage).
@@ -205,11 +299,16 @@ def filter_cyber_internships(
         seen_urls.add(url)
         seen_keys.add(norm_key)
 
-        kept.append(o)
-        if len(kept) >= limit:
-            break
+        score, domains, reason = score_cyber_stage(o)
+        enriched = dict(o)
+        enriched["fit_score"] = score
+        enriched["domaines"] = domains
+        enriched["score_reasoning"] = reason
+        kept.append(enriched)
 
-    return kept
+    # Trier les meilleurs scores /10 en tête
+    kept.sort(key=lambda x: x.get("fit_score", 0), reverse=True)
+    return kept[:limit]
 
 
 # ---------------------------------------------------------------------------

@@ -100,7 +100,13 @@ async def test_send_stage_list_creates_stage_cards_not_student_jobs():
         # Vérifie l'envoi du message d'en-tête + message de l'offre
         assert mock_bot.send_message.call_count == 2
         card_call = mock_bot.send_message.call_args_list[1]
+        card_text = card_call[0][1]
         markup = card_call[1]["reply_markup"]
+
+        # Vérifie que le score /10 et l'explication s'affichent bien sur la carte
+        assert "/10</b>" in card_text
+        assert "⭐" in card_text
+        assert "<i>" in card_text
 
         # Récupère tous les boutons du clavier
         all_buttons = [btn for row in markup.inline_keyboard for btn in row]

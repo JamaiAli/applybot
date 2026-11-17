@@ -793,19 +793,25 @@ async def clean_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 def _save_stage_job(job: dict) -> None:
-    """Enregistre l'offre dans la table jobs avec la catégorie 'stage' (CV ingénieur adapté, pas job étudiant)."""
+    """Enregistre l'offre dans la table jobs avec la catégorie 'stage', score /10 et raisonnement."""
     try:
         conn = bot_core.get_connection()
         now_iso = _dt.datetime.now(_dt.timezone.utc).isoformat()
         bot_core.execute_write(
             conn,
             """
-            INSERT INTO jobs (url, title, company, site, location, apply_status, category, discovered_at)
-            VALUES (?, ?, ?, ?, ?, 'ready_to_apply', 'stage', ?)
+            INSERT INTO jobs (
+                url, title, company, site, location, description,
+                fit_score, score_reasoning, apply_status, category, discovered_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ready_to_apply', 'stage', ?)
             ON CONFLICT(url) DO UPDATE SET
                 title = CASE WHEN excluded.title != '' AND excluded.title != 'Offre de stage' THEN excluded.title ELSE jobs.title END,
                 company = CASE WHEN excluded.company != '' THEN excluded.company ELSE jobs.company END,
                 location = CASE WHEN excluded.location != '' THEN excluded.location ELSE jobs.location END,
+                description = CASE WHEN excluded.description != '' THEN excluded.description ELSE jobs.description END,
+                fit_score = COALESCE(excluded.fit_score, jobs.fit_score),
+                score_reasoning = CASE WHEN excluded.score_reasoning != '' THEN excluded.score_reasoning ELSE jobs.score_reasoning END,
                 category = 'stage'
             """,
             (
@@ -814,6 +820,9 @@ def _save_stage_job(job: dict) -> None:
                 job.get("employer_name") or "Entreprise",
                 job.get("source") or "web",
                 job.get("location") or "",
+                (job.get("description") or "")[:4000],
+                job.get("fit_score"),
+                job.get("score_reasoning") or "",
                 now_iso,
             ),
         )
@@ -822,8 +831,10 @@ def _save_stage_job(job: dict) -> None:
 
 
 async def _send_stage_list(bot, chat_id: int, titre: str, jobs: list[dict]) -> None:
-    """Envoie chaque offre de stage (Luxembourg, Suisse, Suède, etc.) avec bouton
-    '📨 Préparer ma candidature' pour générer le CV d'ingénieur adapté à l'offre."""
+    """Envoie chaque offre de stage (Luxembourg, Suisse, Suède, etc.) avec son score /10,
+    ses domaines cyber, son explication et le bouton '📨 Préparer ma candidature'."""
+    from applypilot.discovery.cyber_filter import score_cyber_stage
+
     # Exclure les offres déjà postulées ou ignorées
     jobs = [
         j for j in jobs
@@ -831,31 +842,65 @@ async def _send_stage_list(bot, chat_id: int, titre: str, jobs: list[dict]) -> N
     ]
 
     if not jobs:
-        await bot.send_message(chat_id, f"{titre} : aucune offre de moins d'une semaine trouvée.")
+        await bot.send_message(chat_id, f"{titre} : aucune offre récente trouvée.")
         return
-    await bot.send_message(chat_id, f"<b>{html.escape(titre)}</b> — {len(jobs)} offre(s)",
-                           parse_mode=ParseMode.HTML)
+
+    # Garantir que chaque offre a bien son fit_score /10, domaines et explication
+    enriched_jobs = []
     for j in jobs:
+        item = dict(j)
+        if item.get("fit_score") is None or not item.get("score_reasoning"):
+            score, domains, reason = score_cyber_stage(item)
+            item.setdefault("fit_score", score)
+            if not item.get("domaines"):
+                item["domaines"] = domains
+            if not item.get("score_reasoning"):
+                item["score_reasoning"] = reason
+        enriched_jobs.append(item)
+
+    enriched_jobs.sort(key=lambda x: x.get("fit_score") or 0, reverse=True)
+
+    await bot.send_message(chat_id, f"<b>{html.escape(titre)}</b> — {len(enriched_jobs)} offre(s)",
+                           parse_mode=ParseMode.HTML)
+    for j in enriched_jobs:
         url = j["url"]
         h = bot_core.remember(url)
         _save_stage_job(j)
 
-        t = html.escape((j.get("title") or "")[:90])
-        comp = html.escape((j.get("employer_name") or "")[:40])
-        loc = html.escape((j.get("location") or "")[:40])
+        t = html.escape((j.get("title") or "")[:120])
+        comp = html.escape((j.get("employer_name") or "")[:50])
+        score = j.get("fit_score")
+        score_str = f"   ·   ⭐ <b>{score}/10</b>" if score is not None else ""
+        loc = html.escape((j.get("location") or "")[:60])
         src = html.escape((j.get("source") or "").capitalize())
-        txt = f"<b>{t}</b>\n🏢 {comp}" + (f" · 📍 {loc}" if loc else "")
-        extra = []
+        domaines = j.get("domaines") or []
+        dom_txt = html.escape(", ".join(domaines[:3])) if isinstance(domaines, list) else html.escape(str(domaines))
+
+        lines = [f"<b>{t}</b>", f"🏢 {comp}{score_str}"]
+        if loc:
+            lines.append(f"📍 {loc}")
+
         age = format_age_fr(j.get("posted_at"))
         if age:
             if "aujourd'hui" in age:
-                extra.append(f"🔥 <b>{age}</b>")
+                lines.append(f"🔥 <b>Parue {age}</b>")
             else:
-                extra.append(f"📅 {age}")
+                lines.append(f"📅 {age}")
+
+        meta = []
         if src:
-            extra.append(f"🔎 {src}")
-        if extra:
-            txt += "\n" + " · ".join(extra)
+            meta.append(f"🔎 {src}")
+        if dom_txt:
+            meta.append(f"🏷 {dom_txt}")
+        if meta:
+            lines.append("   ·   ".join(meta))
+
+        reason = (j.get("score_reasoning") or "").strip()
+        if reason:
+            lines.append("")
+            lines.append(f"<i>{html.escape(reason[:400])}</i>")
+
+        txt = "\n".join(lines)
 
         kb = InlineKeyboardMarkup([
             [
