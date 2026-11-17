@@ -85,12 +85,14 @@ _UPSTREAM: dict[str, str | None] = {
 DISCOVERY_SOURCES: dict[str, str] = {
     "hellowork":    "HelloWork — scraping de la recherche (stages FR)",
     "indeed":       "Indeed — scraper local (stages cyber FR, filtré + tagué)",
+    "moovijob":     "Moovijob — scraping direct des stages au Luxembourg",
 }
 
 # Alias → canonical name for CLI convenience
 _SOURCE_ALIASES: dict[str, str] = {
     "hw":            "hellowork",
     "in":            "indeed",
+    "moovi":         "moovijob",
 }
 
 # Sources that are jobspy with a specific site filter.
@@ -157,6 +159,17 @@ def _run_discover(workers: int = 1, sources: list[str] | None = None,
             log.error("Indeed scraper failed: %s", e)
             console.print(f"  [red]Indeed error:[/red] {e}")
             stats["indeed"] = f"error: {e}"
+
+    if "moovijob" in active:
+        console.print("  [cyan]Moovijob (scraping stages Luxembourg)...[/cyan]")
+        try:
+            from applypilot.discovery.moovijob import run_moovijob_discovery
+            run_moovijob_discovery(queries=queries)
+            stats["moovijob"] = "ok"
+        except Exception as e:
+            log.error("Moovijob scraper failed: %s", e)
+            console.print(f"  [red]Moovijob error:[/red] {e}")
+            stats["moovijob"] = f"error: {e}"
 
     return stats
 

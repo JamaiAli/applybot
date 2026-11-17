@@ -278,7 +278,7 @@ async def _run_search_and_post(bot, chat_id: int, limit: int, do_search: bool = 
     if do_search:
         from applypilot import pipeline
         if is_lux:
-            moteur_name = "Indeed Luxembourg (lu.indeed.com)"
+            moteur_name = "Moovijob Luxembourg"
             ville_txt = ""
         else:
             moteur_name = "Indeed"
@@ -286,52 +286,36 @@ async def _run_search_and_post(bot, chat_id: int, limit: int, do_search: bool = 
         metier_txt = f" ciblée sur <b>{html.escape(metier.upper())}</b>" if metier else ""
         await bot.send_message(chat_id, f"🔎 Recherche {moteur_name}{metier_txt} en cours{ville_txt}…", parse_mode=ParseMode.HTML)
         try:
-            queries_override = None
             if is_lux:
-                if not metier or metier.lower() in ("stage", "stages", "internship", "internships"):
-                    queries_override = {
-                        "Stages Luxembourg": [
-                            "stage",
-                            "internship",
-                            "stage informatique",
-                            "stage cyber",
-                            "internship IT",
-                            "internship security",
-                            "cybersecurity internship",
-                        ]
-                    }
-                else:
-                    queries_override = {
-                        f"Luxembourg {metier}": [
-                            f"stage {metier}",
-                            f"internship {metier}",
-                            f"{metier} internship",
-                            metier,
-                        ]
-                    }
+                q_to_pass = metier if metier and metier.lower() not in ("stage", "stages", "internship", "internships") else None
+                await asyncio.to_thread(pipeline._run_discover, 1, ["moovijob"], queries=q_to_pass, location=city)
             elif metier:
                 from applypilot.discovery import indeed as _ind
                 m_lower = metier.lower()
+                queries_override = None
                 for dom_name, q_list in _ind.QUERIES.items():
                     if m_lower in dom_name.lower() or any(m_lower in q.lower() for q in q_list):
                         queries_override = {dom_name: q_list}
                         break
                 if not queries_override:
                     queries_override = {f"Custom {metier}": [f"stage {metier}", f"alternance {metier}", metier]}
+                await asyncio.to_thread(pipeline._run_discover, 1, ["indeed"], queries=queries_override, location=city)
+            else:
+                await asyncio.to_thread(pipeline._run_discover, 1, ["indeed"], queries=None, location=city)
 
-            await asyncio.to_thread(pipeline._run_discover, 1, ["indeed"], queries=queries_override, location=city)
             await asyncio.to_thread(pipeline._run_score)
         except Exception as exc:
             log.exception("Pipeline échoué : %s", exc)
             await bot.send_message(chat_id, f"⚠️ Recherche partielle : {exc}")
 
     is_lux = bool(city and any(k in city.lower() for k in ("luxembourg", "lux")))
-    min_score = 6 if is_lux else MIN_SCORE
+    min_score = 5 if is_lux else MIN_SCORE
+    strategies_to_fetch = ("moovijob_scrape", "indeed_scrape") if is_lux else ("indeed_scrape",)
     offers = await asyncio.to_thread(
-        bot_core.fetch_pending_offers, min_score, limit, ("indeed_scrape",), None, city, metier)
+        bot_core.fetch_pending_offers, min_score, limit, strategies_to_fetch, None, city, metier)
     if not offers and (metier or is_lux):
         offers = await asyncio.to_thread(
-            bot_core.fetch_pending_offers, 0 if is_lux else 7, limit, ("indeed_scrape",), None, city, metier)
+            bot_core.fetch_pending_offers, 0 if is_lux else 7, limit, strategies_to_fetch, None, city, metier)
 
     metier_label = f" <b>{html.escape(metier.upper())}</b>" if metier else ""
     ville_label = f" à <b>{html.escape(city)}</b>" if city else ""
@@ -341,14 +325,16 @@ async def _run_search_and_post(bot, chat_id: int, limit: int, do_search: bool = 
             f"\n\n💡 <i>Astuce : tu peux élargir avec <code>/search {html.escape(metier)}</code> "
             f"ou tester <code>/offres</code> sans filtre.</i>" if metier else ""
         )
-        await bot.send_message(
-            chat_id,
-            f"Aucune offre Indeed{metier_label}{ville_label} récente (&lt; 7j) à valider pour l'instant.{aide_txt}",
-            parse_mode=ParseMode.HTML)
+        msg_not_found = (
+            f"Aucune offre de stage récente (< 7j) trouvée sur Moovijob Luxembourg.{aide_txt}"
+            if is_lux else
+            f"Aucune offre Indeed{metier_label}{ville_label} récente (&lt; 7j) à valider pour l'instant.{aide_txt}"
+        )
+        await bot.send_message(chat_id, msg_not_found, parse_mode=ParseMode.HTML)
         return 0
 
     header_label = (
-        f"📋 <b>{len(offers)} offre(s) Indeed Luxembourg à examiner :</b>"
+        f"📋 <b>{len(offers)} offre(s) de stage au Luxembourg (Moovijob) à examiner :</b>"
         if is_lux else
         f"📋 <b>{len(offers)} offre(s) Indeed{metier_label}{ville_label} à examiner :</b>"
     )
@@ -585,7 +571,7 @@ async def offres_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def luxembourg_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Recherche des offres de stage au Luxembourg (Indeed LU + annuaire des plateformes locales).
+    """Recherche des offres de stage au Luxembourg (Moovijob + annuaire des plateformes locales).
     Usage : /luxembourg [métier] ou /search luxembourg"""
     if not _authorized(update):
         return await _deny(update)
@@ -595,7 +581,7 @@ async def luxembourg_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     msg_intro = (
         "🇱🇺 <b>Stages au Luxembourg</b>\n\n"
-        "🔎 Scan en direct des offres de stage au Luxembourg (Indeed LU avec scoring IA)…"
+        "🔎 Scan en direct des offres de stage sur <b>Moovijob</b> (N°1 de l'emploi & stages au Luxembourg)…"
     )
     await context.bot.send_message(chat_id, msg_intro, parse_mode=ParseMode.HTML)
 
@@ -603,16 +589,18 @@ async def luxembourg_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     portails_msg = (
         "🌐 <b>Portails de recrutement incontournables au Luxembourg :</b>\n\n"
-        "• 🇱🇺 <a href=\"https://www.moovijob.com/offres-emploi/jobs-luxembourg?q=stage\"><b>Moovijob</b></a> — N°1 de l'emploi & stages au Luxembourg (Intérêt Élevé)\n"
-        "• 🎓 <a href=\"https://www.student.lu/fr/stages\"><b>Student.lu</b></a> — Spécialiste des stages et jobs étudiants (Intérêt Très élevé)\n"
-        "• 💻 <a href=\"https://www.ictjob.lu/fr/chercher-emplois-it\"><b>ICTJob.lu</b></a> — Le portail spécialisé Informatique & IT (Intérêt Très élevé)\n"
-        "• 💼 <a href=\"https://en.jobs.lu/jobs/internship\"><b>Jobs.lu</b></a> — Grand site généraliste luxembourgeois (Intérêt Élevé)\n"
-        "• 📰 <a href=\"https://paperjam.lu/jobs\"><b>Paperjam Jobs</b></a> — Emploi, finance & tech (Intérêt Élevé)\n"
-        "• 🚀 <a href=\"https://www.siliconluxembourg.com\"><b>Silicon Luxembourg</b></a> — Écosystème startups & innovation\n"
-        "• 🏛️ <a href=\"https://adem.public.lu\"><b>ADEM</b></a> — Service public de l'emploi luxembourgeois\n"
-        "• 🌍 <a href=\"https://workinluxembourg.lu\"><b>Work in Luxembourg</b></a> — Recrutement international & frontalier\n"
-        "• 💶 <a href=\"https://www.efinancialcareers.lu\"><b>eFinancialCareers</b></a> — Finance & banques\n\n"
-        "💡 <i>Tu peux aussi utiliser <code>/search luxembourg</code> ou <code>/search cyber luxembourg</code> à tout moment.</i>"
+        "• 🇱🇺 <a href=\"https://www.moovijob.com/offres-emploi/jobs-luxembourg/contrat-stage\"><b>Moovijob</b></a> — Emploi général (Intérêt : Élevé)\n"
+        "• 💼 <a href=\"https://en.jobs.lu/jobs/internship\"><b>Jobs.lu</b></a> — Emploi général (Intérêt : Élevé)\n"
+        "• 🔎 <a href=\"https://www.jobfinder.lu/fr/recherche?q=stage\"><b>Jobfinder</b></a> — Emploi général (Intérêt : Moyen)\n"
+        "• 💻 <a href=\"https://www.ictjob.lu/fr/chercher-emplois-it?keywords=stage\"><b>ICTJob.lu</b></a> — Informatique et IT (Intérêt : Très élevé)\n"
+        "• 🚀 <a href=\"https://www.siliconluxembourg.com\"><b>Silicon Luxembourg</b></a> — Technologie et startups (Intérêt : Élevé)\n"
+        "• 🎓 <a href=\"https://www.student.lu/fr/emploi/t/stage\"><b>Student.lu</b></a> — Stages et jobs étudiants (Intérêt : Très élevé)\n"
+        "• 📰 <a href=\"https://paperjam.lu/jobs\"><b>Paperjam Jobs</b></a> — Emploi et finance (Intérêt : Élevé)\n"
+        "• 💶 <a href=\"https://www.efinancialcareers.lu\"><b>eFinancialCareers</b></a> — Finance et banque (Intérêt : Élevé)\n"
+        "• 🏛️ <a href=\"https://adem.public.lu\"><b>ADEM</b></a> — Service public de l'emploi (Intérêt : Élevé)\n"
+        "• 🏢 <a href=\"https://govjobs.public.lu\"><b>GovJobs</b></a> — Fonction publique (Intérêt : Moyen)\n"
+        "• 🌍 <a href=\"https://workinluxembourg.lu\"><b>Work in Luxembourg</b></a> — Recrutement international (Intérêt : Élevé)\n\n"
+        "💡 <i>Tu peux aussi filtrer avec <code>/luxembourg informatique</code> ou <code>/search cyber luxembourg</code>.</i>"
     )
     await context.bot.send_message(chat_id, portails_msg, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 

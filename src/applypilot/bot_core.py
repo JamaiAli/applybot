@@ -81,10 +81,10 @@ def display_company(row: dict) -> str:
 
 
 # Sources présentées par le bot (HelloWork + Indeed, au même niveau).
-PENDING_STRATEGIES: tuple[str, ...] = ("hellowork_scrape", "indeed_scrape")
+PENDING_STRATEGIES: tuple[str, ...] = ("hellowork_scrape", "indeed_scrape", "moovijob_scrape")
 
 # Libellés d'affichage par source (colonne `source`).
-SOURCE_LABELS: dict[str, str] = {"hellowork": "HelloWork", "indeed": "Indeed"}
+SOURCE_LABELS: dict[str, str] = {"hellowork": "HelloWork", "indeed": "Indeed", "moovijob": "Moovijob"}
 
 
 def _norm_key(s: str | None) -> str:

@@ -99,3 +99,29 @@ async def test_luxembourg_cmd():
         assert "Jobs.lu" in portails_msg
         assert "Paperjam" in portails_msg
         assert "ADEM" in portails_msg
+
+
+from unittest.mock import patch
+from applypilot.discovery import moovijob
+
+def test_moovijob_html_parsing():
+    sample_html = """
+    <div class="card-job-offer-new" href="/offres-emploi/bank/stage-it-123">
+        <a class="card-job-offer-new-title">Stage Développeur Python</a>
+        <img alt="Banque Luxembourg logo" />
+        <span class="badge">Findel</span>
+        <span class="badge">Stage</span>
+    </div>
+    """
+    with patch("applypilot.discovery.moovijob.sync_playwright") as mock_pw:
+        mock_browser = mock_pw.return_value.__enter__.return_value.chromium.launch.return_value
+        mock_page = mock_browser.new_page.return_value
+        mock_page.content.return_value = sample_html
+        
+        offers = moovijob.scrape_moovijob_offers()
+        assert len(offers) == 1
+        assert offers[0]["title"] == "Stage Développeur Python"
+        assert offers[0]["employer_name"] == "Banque Luxembourg"
+        assert offers[0]["location"] == "Findel, Luxembourg"
+        assert offers[0]["source"] == "moovijob"
+        assert offers[0]["url"] == "https://www.moovijob.com/offres-emploi/bank/stage-it-123"
