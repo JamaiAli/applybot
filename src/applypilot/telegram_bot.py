@@ -274,14 +274,19 @@ def _parse_offres_args(args: list[str] | None, default_limit: int = MAX_CARDS) -
 
 async def _run_search_and_post(bot, chat_id: int, limit: int, do_search: bool = True,
                                city: str | None = None, metier: str | None = None) -> int:
+    is_lux = bool(city and any(k in city.lower() for k in ("luxembourg", "lux")))
     if do_search:
         from applypilot import pipeline
-        ville_txt = f" à {city}" if city else ""
+        if is_lux:
+            moteur_name = "Indeed Luxembourg (lu.indeed.com)"
+            ville_txt = ""
+        else:
+            moteur_name = "Indeed"
+            ville_txt = f" à {city}" if city else ""
         metier_txt = f" ciblée sur <b>{html.escape(metier.upper())}</b>" if metier else ""
-        await bot.send_message(chat_id, f"🔎 Recherche Indeed{metier_txt} en cours{ville_txt}…", parse_mode=ParseMode.HTML)
+        await bot.send_message(chat_id, f"🔎 Recherche {moteur_name}{metier_txt} en cours{ville_txt}…", parse_mode=ParseMode.HTML)
         try:
             queries_override = None
-            is_lux = bool(city and any(k in city.lower() for k in ("luxembourg", "lux")))
             if is_lux:
                 if not metier or metier.lower() in ("stage", "stages", "internship", "internships"):
                     queries_override = {
@@ -342,9 +347,12 @@ async def _run_search_and_post(bot, chat_id: int, limit: int, do_search: bool = 
             parse_mode=ParseMode.HTML)
         return 0
 
-    await bot.send_message(
-        chat_id, f"📋 {len(offers)} offre(s) Indeed{metier_label}{ville_label} à examiner :",
-        parse_mode=ParseMode.HTML)
+    header_label = (
+        f"📋 <b>{len(offers)} offre(s) Indeed Luxembourg à examiner :</b>"
+        if is_lux else
+        f"📋 <b>{len(offers)} offre(s) Indeed{metier_label}{ville_label} à examiner :</b>"
+    )
+    await bot.send_message(chat_id, header_label, parse_mode=ParseMode.HTML)
     for row in offers:
         await _send_offer(bot, chat_id, row)
     return len(offers)
