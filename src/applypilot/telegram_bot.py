@@ -215,6 +215,7 @@ KNOWN_CITIES = {
     "bordeaux", "toulouse", "lille", "nantes", "rennes", "strasbourg",
     "montpellier", "nice", "orleans", "tours", "vierzon", "ile-de-france", "cher",
     "luxembourg", "lux",
+    "suisse", "swiss", "ch", "geneve", "genève", "lausanne", "zurich", "bâle", "bale", "bern", "berne",
 }
 
 
@@ -356,7 +357,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "• <code>/scan [métier] [ville]</code> — scanner en temps réel les sites pour dénicher les offres inédites\n"
         "• <code>/search [métier] [ville]</code> — chercher sur Indeed (ex: <code>/search soc</code>, <code>/search pentest Paris</code>)\n"
         "• <code>/offres [métier] [ville]</code> — voir les offres en base (ex: <code>/offres soc</code>, <code>/offres ad</code>)\n"
-        "• <code>/job</code> — jobs étudiants Bourges & Saint-Doulchard\n"
+        "• <code>/job</code> — jobs étudiants Bourges & Saint-Doulchard\n• <code>/suisse</code> — stages en Suisse (Jobup & SwissDevJobs)\n"
         "• <code>/experience</code> — ajouter un projet ou une expérience à ton profil\n"
         "• <code>/track</code> — scanner les réponses recruteurs sur Gmail\n"
         "• <code>/status</code> — état du pipeline et de la veille auto\n\n"
@@ -554,6 +555,9 @@ async def search_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if city and any(k in city.lower() for k in ("luxembourg", "lux")):
         context.args = [metier] if metier else []
         return await luxembourg_cmd(update, context)
+    if city and any(k in city.lower() for k in ("suisse", "swiss", "ch", "geneve", "genève", "lausanne", "zurich", "bâle", "bale", "bern", "berne")):
+        context.args = [metier] if metier else []
+        return await suisse_cmd(update, context)
     n = await _run_search_and_post(context.bot, update.effective_chat.id, limit, do_search=True, city=city, metier=metier)
     cible_txt = f" ({metier.upper()})" if metier else ""
     ville_txt = f" à {city}" if city else ""
@@ -619,6 +623,54 @@ async def luxembourg_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         "• 🏢 <a href=\"https://govjobs.public.lu\"><b>GovJobs</b></a> — Fonction publique (Intérêt : Moyen)\n"
         "• 🌍 <a href=\"https://workinluxembourg.lu\"><b>Work in Luxembourg</b></a> — Recrutement international (Intérêt : Élevé)\n\n"
         "💡 <i>Astuce : tu peux filtrer par mot-clé avec <code>/luxembourg informatique</code> ou <code>/luxembourg cyber</code>.</i>"
+    )
+    await context.bot.send_message(chat_id, portails_msg, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
+async def suisse_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Recherche des offres de stage en Suisse (Jobup.ch + SwissDevJobs + annuaire suisse).
+    Usage : /suisse [métier] ou /search suisse"""
+    if not _authorized(update):
+        return await _deny(update)
+
+    metier_arg = " ".join(context.args).strip() if context.args else None
+    chat_id = update.effective_chat.id
+
+    cible_txt = f" ({html.escape(metier_arg)})" if metier_arg else ""
+    await context.bot.send_message(
+        chat_id,
+        f"🇨🇭 <b>Stages en Suisse</b>\n\n🔎 Scan en direct sur <b>Jobup.ch</b> (N°1 en Suisse romande) & <b>SwissDevJobs</b>{cible_txt}…",
+        parse_mode=ParseMode.HTML
+    )
+
+    from applypilot.discovery import switzerland
+    try:
+        offers = await asyncio.to_thread(switzerland.scrape_swiss_offers, query=metier_arg, limit=MAX_CARDS)
+    except Exception as exc:
+        log.warning("Erreur scraping Suisse : %s", exc)
+        offers = []
+
+    if offers:
+        await _send_job_list(context.bot, chat_id, f"🇨🇭 Offres de stage en Suisse (Jobup & SwissDevJobs){cible_txt}", offers)
+    else:
+        await context.bot.send_message(
+            chat_id,
+            f"⚠️ Aucune offre trouvée directement sur Jobup pour <i>{html.escape(metier_arg or 'stage')}</i>.",
+            parse_mode=ParseMode.HTML
+        )
+
+    portails_msg = (
+        "🌐 <b>Portails de recrutement incontournables en Suisse :</b>\n\n"
+        "• 🇨🇭 <a href=\"https://www.jobs.ch/fr/emplois/?term=stage\"><b>Jobs.ch</b></a> — N°1 national (Suisse entière & Suisse alémanique)\n"
+        "• 🇨🇭 <a href=\"https://www.jobup.ch/fr/emplois/?term=stage\"><b>Jobup</b></a> — N°1 en Suisse romande (Genève, Vaud, Lausanne…)\n"
+        "• 🔎 <a href=\"https://www.jobscout24.ch/fr/emplois/stage/\"><b>JobScout24</b></a> — Portail généraliste d'emploi en Suisse\n"
+        "• 💼 <a href=\"https://www.jobwinner.ch/fr/offres-emploi?q=stage\"><b>Jobwinner</b></a> — Plateforme de recherche d'emploi suisse\n"
+        "• 💻 <a href=\"https://www.ictcareer.ch/jobs?q=stage\"><b>ICTcareer</b></a> — Spécialiste IT, télécoms & technologies\n"
+        "• 🖥️ <a href=\"https://www.itjobs.ch/jobs/stage\"><b>ITJobs</b></a> — Emplois & stages informatiques en Suisse\n"
+        "• 🚀 <a href=\"https://swissdevjobs.ch/jobs/internship\"><b>SwissDevJobs</b></a> — Tech, dev & cybersécurité (salaires transparents)\n"
+        "• ⚙️ <a href=\"https://www.ingjobs.ch/jobs/stage\"><b>INGJobs</b></a> — Ingénierie & profils techniques\n"
+        "• 🎓 <a href=\"https://academicpositions.com/jobs/switzerland\"><b>Academic Positions</b></a> — Recherche, universités, EPFL & ETH Zurich\n"
+        "• 💶 <a href=\"https://www.efinancialcareers.ch/jobs/internship\"><b>eFinancialCareers</b></a> — Finance, banques privées & fintech\n\n"
+        "💡 <i>Astuce : tu peux filtrer par métier avec <code>/suisse informatique</code> ou <code>/search cyber suisse</code>.</i>"
     )
     await context.bot.send_message(chat_id, portails_msg, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
@@ -2029,6 +2081,9 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("status", status_cmd))
     app.add_handler(CommandHandler("luxembourg", luxembourg_cmd))
     app.add_handler(CommandHandler("lux", luxembourg_cmd))
+    app.add_handler(CommandHandler("suisse", suisse_cmd))
+    app.add_handler(CommandHandler("swiss", suisse_cmd))
+    app.add_handler(CommandHandler("ch", suisse_cmd))
     app.add_handler(CommandHandler("pause", pause_cmd))
     app.add_handler(CommandHandler("resume", resume_cmd))
     app.add_handler(CommandHandler("clean", clean_cmd))
