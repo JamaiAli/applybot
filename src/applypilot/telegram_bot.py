@@ -216,6 +216,7 @@ KNOWN_CITIES = {
     "montpellier", "nice", "orleans", "tours", "vierzon", "ile-de-france", "cher",
     "luxembourg", "lux",
     "suisse", "swiss", "ch", "geneve", "genève", "lausanne", "zurich", "bâle", "bale", "bern", "berne",
+    "suede", "suède", "sweden", "se", "stockholm", "goteborg", "göteborg", "malmo", "malmö", "uppsala",
 }
 
 
@@ -357,7 +358,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "• <code>/scan [métier] [ville]</code> — scanner en temps réel les sites pour dénicher les offres inédites\n"
         "• <code>/search [métier] [ville]</code> — chercher sur Indeed (ex: <code>/search soc</code>, <code>/search pentest Paris</code>)\n"
         "• <code>/offres [métier] [ville]</code> — voir les offres en base (ex: <code>/offres soc</code>, <code>/offres ad</code>)\n"
-        "• <code>/job</code> — jobs étudiants Bourges & Saint-Doulchard\n• <code>/suisse</code> — stages en Suisse (Jobup & SwissDevJobs)\n"
+        "• <code>/job</code> — jobs étudiants Bourges & Saint-Doulchard\n• <code>/suisse</code> — stages en Suisse\n• <code>/suede</code> — stages en Suède (Platsbanken)\n"
         "• <code>/experience</code> — ajouter un projet ou une expérience à ton profil\n"
         "• <code>/track</code> — scanner les réponses recruteurs sur Gmail\n"
         "• <code>/status</code> — état du pipeline et de la veille auto\n\n"
@@ -377,7 +378,10 @@ async def commandes_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "🎯 <b>Recherche & Offres Cybersécurité</b>\n"
         "• <code>/scan [métier] [ville] [limite]</code> — ⚡ Scan en temps réel des sites (HelloWork, Indeed) : ignore tout ce qui est déjà en base et diffuse les toutes dernières offres en direct !\n"
         "• <code>/hellowork [métier] [ville] [limite]</code> — ⚡ Même scan en temps réel, mais sur HelloWork uniquement (ex : <code>/hellowork soc</code>, <code>/hellowork pentest Paris</code>)\n"
-        "• <code>/search [métier] [ville] [limite]</code> — Recherche ciblée en direct sur Indeed + scoring IA (ex : <code>/search soc</code>, <code>/search luxembourg</code>, <code>/search pentest Paris</code>)\n"        "• <code>/luxembourg [métier]</code> — Stages au Luxembourg (Indeed LU + annuaire des plateformes locales)\n"
+        "• <code>/search [métier] [ville] [limite]</code> — Recherche ciblée en direct sur Indeed + scoring IA (ex : <code>/search soc</code>, <code>/search luxembourg</code>, <code>/search pentest Paris</code>)\n"
+        "• <code>/luxembourg [métier]</code> — Stages au Luxembourg (Moovijob + annuaire des plateformes locales)\n"
+        "• <code>/suisse [métier]</code> — Stages en Suisse (Jobup.ch, SwissDevJobs + annuaire suisse)\n"
+        "• <code>/suede [métier]</code> — Stages en Suède (Platsbanken Arbetsförmedlingen + annuaire des 10 portails suédois)\n"
         "• <code>/offres [métier] [ville] [limite]</code> — Affiche les offres fraîches (≤ 7 jours, aujourd'hui en tête) prêtes en base (ex : <code>/offres soc</code>, <code>/offres Paris</code>)\n\n"
         "💼 <b>Jobs Étudiants & Intérim</b>\n"
         "• <code>/job [ville]</code> — Jobs étudiants et missions intérim en présentiel sur Indeed (Bourges par défaut, ou ex: /job Orléans)\n"
@@ -558,6 +562,9 @@ async def search_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if city and any(k in city.lower() for k in ("suisse", "swiss", "ch", "geneve", "genève", "lausanne", "zurich", "bâle", "bale", "bern", "berne")):
         context.args = [metier] if metier else []
         return await suisse_cmd(update, context)
+    if city and any(k in city.lower() for k in ("suede", "suède", "sweden", "se", "stockholm", "goteborg", "göteborg", "malmo", "malmö", "uppsala")):
+        context.args = [metier] if metier else []
+        return await suede_cmd(update, context)
     n = await _run_search_and_post(context.bot, update.effective_chat.id, limit, do_search=True, city=city, metier=metier)
     cible_txt = f" ({metier.upper()})" if metier else ""
     ville_txt = f" à {city}" if city else ""
@@ -673,6 +680,55 @@ async def suisse_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         "💡 <i>Astuce : tu peux filtrer par métier avec <code>/suisse informatique</code> ou <code>/search cyber suisse</code>.</i>"
     )
     await context.bot.send_message(chat_id, portails_msg, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
+async def suede_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Recherche des offres de stage en Suède (Platsbanken Arbetsförmedlingen + annuaire suédois).
+    Usage : /suede [métier] ou /search suede"""
+    if not _authorized(update):
+        return await _deny(update)
+
+    metier_arg = " ".join(context.args).strip() if context.args else None
+    chat_id = update.effective_chat.id
+
+    cible_txt = f" ({html.escape(metier_arg)})" if metier_arg else ""
+    await context.bot.send_message(
+        chat_id,
+        f"🇸🇪 <b>Stages en Suède</b>\n\n🔎 Scan en direct sur <b>Platsbanken</b> (N°1 en Suède — Arbetsförmedlingen){cible_txt}…",
+        parse_mode=ParseMode.HTML
+    )
+
+    from applypilot.discovery import sweden
+    try:
+        offers = await asyncio.to_thread(sweden.scrape_platsbanken_offers, query=metier_arg, limit=MAX_CARDS)
+    except Exception as exc:
+        log.warning("Erreur scraping Suède : %s", exc)
+        offers = []
+
+    if offers:
+        await _send_job_list(context.bot, chat_id, f"🇸🇪 Offres de stage en Suède (Platsbanken){cible_txt}", offers)
+    else:
+        await context.bot.send_message(
+            chat_id,
+            f"⚠️ Aucune offre trouvée directement sur Platsbanken pour <i>{html.escape(metier_arg or 'stage')}</i>.",
+            parse_mode=ParseMode.HTML
+        )
+
+    portails_msg = (
+        "🌐 <b>Portails de recrutement incontournables en Suède :</b>\n\n"
+        "• 🇸🇪 <a href=\"https://arbetsformedlingen.se/platsbanken/annonser?q=internship\"><b>Platsbanken</b></a> — N°1 national (Arbetsförmedlingen)\n"
+        "• 🎓 <a href=\"https://www.traineeguiden.se/\"><b>Traineeguiden</b></a> — Traineeships & programmes jeunes diplômés\n"
+        "• 💼 <a href=\"https://www.jobteaser.com/fr/job-offers?locations=Sweden\"><b>JobTeaser</b></a> — Plateforme carrières & stages étudiants\n"
+        "• 🏢 <a href=\"https://www.academicwork.se/jobb?q=internship\"><b>Academic Work</b></a> — Leader recrutement étudiants & diplômés\n"
+        "• 🔬 <a href=\"https://academicpositions.com/jobs/sweden\"><b>Academic Positions</b></a> — Universités, KTH & recherche\n"
+        "• 🌍 <a href=\"https://graduateland.com/jobs/sweden\"><b>Graduateland</b></a> — Stages & premiers emplois internationaux\n"
+        "• 🏙️ <a href=\"https://jobsinstockholm.com/\"><b>Jobs in Stockholm</b></a> — Hub tech & emplois anglophones (Stockholm)\n"
+        "• 🌐 <a href=\"https://www.linkedin.com/jobs/internship-jobs-sweden\"><b>LinkedIn Jobs</b></a> — Stages & réseau professionnel en Suède\n"
+        "• 🔎 <a href=\"https://se.indeed.com/jobs?q=internship&l=Sweden\"><b>Indeed</b></a> — Version Suède (se.indeed.com)\n"
+        "• 🧭 <a href=\"https://www.jobbsafari.se/jobbannonser?q=internship\"><b>Jobbsafari</b></a> — Grand métamoteur d'emploi suédois\n\n"
+        "💡 <i>Astuce : tu peux filtrer par métier avec <code>/suede cyber</code> ou <code>/search informatique suede</code>.</i>"
+    )
+    await context.bot.send_message(chat_id, portails_msg, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
 
 
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2084,6 +2140,9 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("suisse", suisse_cmd))
     app.add_handler(CommandHandler("swiss", suisse_cmd))
     app.add_handler(CommandHandler("ch", suisse_cmd))
+    app.add_handler(CommandHandler("suede", suede_cmd))
+    app.add_handler(CommandHandler("sweden", suede_cmd))
+    app.add_handler(CommandHandler("se", suede_cmd))
     app.add_handler(CommandHandler("pause", pause_cmd))
     app.add_handler(CommandHandler("resume", resume_cmd))
     app.add_handler(CommandHandler("clean", clean_cmd))
