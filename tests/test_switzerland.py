@@ -26,10 +26,7 @@ def test_swissdevjobs_parsing():
             "technologies": ["Java"],
         }
     ]
-    with patch("httpx.get") as mock_get:
-        mock_get.return_value.status_code = 200
-        mock_get.return_value.json.return_value = sample_jobs
-
+    with patch("applypilot.discovery.switzerland._fetch_swissdevjobs_json", return_value=sample_jobs):
         res = switzerland.scrape_swissdevjobs(query=None)
         assert len(res) == 1
         assert res[0]["title"] == "Internship - Cyber Security"
@@ -61,7 +58,7 @@ async def test_suisse_cmd():
 
     with patch.object(telegram_bot, "_authorized", return_value=True), \
          patch("applypilot.discovery.switzerland.scrape_swiss_offers", return_value=sample_offers), \
-         patch.object(telegram_bot, "_send_job_list", new_callable=AsyncMock) as mock_send_list:
+         patch.object(telegram_bot, "_send_stage_list", new_callable=AsyncMock) as mock_send_list:
 
         await telegram_bot.suisse_cmd(update, context)
 
@@ -78,3 +75,41 @@ async def test_suisse_cmd():
         assert "INGJobs" in portails_msg
         assert "Academic Positions" in portails_msg
         assert "eFinancialCareers" in portails_msg
+
+
+@pytest.mark.anyio
+async def test_send_stage_list_creates_stage_cards_not_student_jobs():
+    """Vérifie que _send_stage_list génère des boutons prep: (stage ingénieur) et non jobapply: (job étudiant)."""
+    mock_bot = SimpleNamespace(send_message=AsyncMock())
+    sample_jobs = [{
+        "url": "https://swissdevjobs.ch/jobs/kpmg-cyber",
+        "title": "Internship - Cyber Security",
+        "employer_name": "KPMG Suisse",
+        "location": "Genève, Suisse",
+        "posted_at": "2026-11-17T12:00:00",
+        "source": "swissdevjobs",
+    }]
+
+    with patch.object(telegram_bot, "_save_stage_job") as mock_save, \
+         patch("applypilot.bot_core.is_job_decided", return_value=False), \
+         patch("applypilot.bot_core.set_card_message"):
+
+        await telegram_bot._send_stage_list(mock_bot, 12345, "🇨🇭 Offres Suisse", sample_jobs)
+
+        mock_save.assert_called_once()
+        # Vérifie l'envoi du message d'en-tête + message de l'offre
+        assert mock_bot.send_message.call_count == 2
+        card_call = mock_bot.send_message.call_args_list[1]
+        markup = card_call[1]["reply_markup"]
+
+        # Récupère tous les boutons du clavier
+        all_buttons = [btn for row in markup.inline_keyboard for btn in row]
+        button_texts = [b.text for b in all_buttons]
+        button_callbacks = [b.callback_data for b in all_buttons if b.callback_data]
+
+        assert "📨 Préparer ma candidature" in button_texts
+        assert any(cb.startswith("prep:") for cb in button_callbacks)
+        # S'assurer qu'aucun callback jobapply (job étudiant) n'est présent
+        assert not any(cb.startswith("jobapply:") for cb in button_callbacks)
+        assert any(b.url == "https://swissdevjobs.ch/jobs/kpmg-cyber" for b in all_buttons)
+

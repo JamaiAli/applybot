@@ -7,8 +7,10 @@ Scrape en direct :
 
 from __future__ import annotations
 
+import json
 import logging
 import re
+import subprocess
 from datetime import datetime
 from bs4 import BeautifulSoup
 import httpx
@@ -16,16 +18,47 @@ from playwright.sync_api import sync_playwright
 
 log = logging.getLogger(__name__)
 
+SWISSDEVJOBS_API = "https://swissdevjobs.ch/api/jobsLight"
 
-def scrape_swissdevjobs(query: str | None = None, limit: int = 10) -> list[dict]:
-    """Récupère les stages et postes junior tech depuis l'API publique SwissDevJobs."""
+
+def _fetch_swissdevjobs_json() -> list[dict]:
+    """Télécharge la liste des offres depuis SwissDevJobs (curl.exe ultra-rapide ou httpx)."""
+    # 1. Tentative rapide via curl.exe (évite tout hang Cloudflare sur Windows)
     try:
-        r = httpx.get("https://swissdevjobs.ch/api/jobsLight", timeout=12)
-        if r.status_code != 200:
-            return []
-        jobs = r.json()
+        proc = subprocess.run(
+            ["curl.exe", "-s", "--max-time", "8", SWISSDEVJOBS_API],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        if proc.returncode == 0 and proc.stdout.strip().startswith("["):
+            data = json.loads(proc.stdout)
+            if isinstance(data, list):
+                return data
+    except Exception as exc:
+        log.debug("curl.exe pour SwissDevJobs a échoué : %s", exc)
+
+    # 2. Fallback httpx avec headers navigateur
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Accept": "application/json",
+        }
+        r = httpx.get(SWISSDEVJOBS_API, headers=headers, timeout=8)
+        if r.status_code == 200:
+            data = r.json()
+            if isinstance(data, list):
+                return data
     except Exception as exc:
         log.warning("SwissDevJobs API indisponible : %s", exc)
+
+    return []
+
+
+def scrape_swissdevjobs(query: str | None = None, limit: int = 10) -> list[dict]:
+    """Récupère les stages et programmes trainee tech depuis l'API SwissDevJobs."""
+    jobs = _fetch_swissdevjobs_json()
+    if not jobs:
         return []
 
     q_low = query.lower().strip() if query else None
@@ -34,10 +67,14 @@ def scrape_swissdevjobs(query: str | None = None, limit: int = 10) -> list[dict]
         name = (j.get("name") or "").strip()
         name_low = name.lower()
         seniority = (j.get("seniority") or "").lower()
-        jobType = (j.get("jobType") or "").lower()
+        job_type = (j.get("jobType") or "").lower()
         technologies = [t.lower() for t in (j.get("technologies") or [])]
 
-        is_intern = any(k in name_low or k in seniority or k in jobType for k in ["intern", "stage", "trainee", "student", "junior"])
+        # Filtre STRICT de stage : exclusif aux stages / trainees / étudiants (PAS les CDI juniors !)
+        is_intern = any(
+            k in name_low or k in seniority or k in job_type
+            for k in ["intern", "stage", "stagiaire", "trainee", "praktik", "student", "working student"]
+        )
         if not is_intern:
             continue
 
@@ -82,9 +119,9 @@ def scrape_jobup(query: str | None = None, limit: int = 15) -> list[dict]:
             browser = p.chromium.launch(headless=True)
             page = browser.new_page(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                locale="fr-CH"
+                locale="fr-CH",
             )
-            page.goto(url, timeout=20000, wait_until="domcontentloaded")
+            page.goto(url, timeout=25000, wait_until="domcontentloaded")
             page.wait_for_timeout(2500)
             html = page.content()
             browser.close()
@@ -97,6 +134,8 @@ def scrape_jobup(query: str | None = None, limit: int = 15) -> list[dict]:
 
     offers = []
     seen = set()
+    q_low = query.lower().strip() if query else None
+
     for a in links:
         href = a.get("href", "")
         if not href or href in seen:
@@ -107,7 +146,16 @@ def scrape_jobup(query: str | None = None, limit: int = 15) -> list[dict]:
 
         parts = [p.strip() for p in a.get_text(separator=" /// ", strip=True).split(" /// ") if p.strip()]
 
-        # Location
+        # Extraction du type de contrat
+        contract = ""
+        if "Type de contrat" in parts:
+            c_idx = parts.index("Type de contrat")
+            if c_idx + 1 < len(parts) and parts[c_idx + 1] != ":":
+                contract = parts[c_idx + 1]
+            elif c_idx + 2 < len(parts):
+                contract = parts[c_idx + 2]
+
+        # Extraction du lieu
         location = "Suisse"
         if "Lieu de travail" in parts:
             idx = parts.index("Lieu de travail")
@@ -116,24 +164,58 @@ def scrape_jobup(query: str | None = None, limit: int = 15) -> list[dict]:
                     location = f"{item}, Suisse"
                     break
 
-        # Title
-        title = parts[1] if len(parts) > 1 else "Stage en Suisse"
-        if any(w in title.lower() for w in ["hier", "jours", "semaine", "aujourd", "mois"]):
-            title = parts[2] if len(parts) > 2 else title
-        title = re.sub(r"^[^\w\s]+", "", title).strip()
+        # Extraction du titre
+        title = ""
+        for p in parts[1:4]:
+            if p not in ("Lieu de travail", ":", location.replace(", Suisse", "")) and not any(
+                w in p.lower() for w in ["taux", "type de contrat", "salaire", "candidature simplifiée", "nouveau"]
+            ):
+                title = p
+                break
+        title = re.sub(r"^[^\w\s]+", "", title).strip() or "Offre de stage"
 
-        # Company
+        title_low = title.lower()
+        contract_low = contract.lower()
+
+        # Filtrage strict STAGE : doit explicitement être un stage / stagiaire / intern
+        is_stage = any(
+            k in title_low for k in ["stage", "stagiaire", "intern", "trainee", "praktik"]
+        ) or any(
+            k in contract_low for k in ["stage", "intern", "trainee", "praktik"]
+        )
+
+        # Exclure les apprentissages scolaires / CFC et les postes fixes/intérim ordinaires
+        if any(k in title_low for k in ["apprenti", "apprentissage", "cfc"]):
+            is_stage = False
+        if contract_low in ["durée indéterminée", "temporaire", "fixe"] and not any(
+            k in title_low for k in ["stage", "stagiaire", "intern", "trainee", "praktik"]
+        ):
+            is_stage = False
+
+        if not is_stage:
+            continue
+
+        if q_low and q_low not in title_low:
+            continue
+
+        # Extraction de l'entreprise
         company = "Entreprise en Suisse"
+        contract_noise = {
+            "stage", "temporaire", "fixe", "100%", "durée indéterminée", "cdd", "cdi",
+            "apprentissage", "taux d'activité", "type de contrat", "lieu de travail",
+            "candidature simplifiée", "mis en avant", "offre pertinente ?", "nouveau", "salaire"
+        }
         candidates = [
             p for p in parts
-            if p not in (title, location.replace(", Suisse", ""), ":", "Stage", "Temporaire", "Fixe", "100%", "Lieu de travail", "Type de contrat", "Taux d'activité", "Candidature simplifiée", "Mis en avant", "Offre pertinente ?")
-            and not any(w in p.lower() for w in ["jours", "semaine", "hier", "chf", "taux", "%"])
+            if p not in (title, location.replace(", Suisse", ""), ":")
+            and p.lower() not in contract_noise
+            and not any(w in p.lower() for w in ["jours", "semaine", "hier", "chf", "taux", "%", "heure", "mois", "trimestre", "an"])
         ]
         if candidates:
             company = candidates[-1]
 
         offers.append({
-            "title": title or "Stage en Suisse",
+            "title": title,
             "employer_name": company,
             "location": location,
             "url": href,
@@ -153,7 +235,6 @@ def scrape_swiss_offers(query: str | None = None, limit: int = 20) -> list[dict]
 
     combined = []
     seen_urls = set()
-    # Interleave or merge
     for o in (jobup_list + dev_list):
         if o["url"] not in seen_urls:
             seen_urls.add(o["url"])

@@ -608,7 +608,7 @@ async def luxembourg_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         offers = []
 
     if offers:
-        await _send_job_list(context.bot, chat_id, f"🇱🇺 Offres de stage Moovijob Luxembourg{cible_txt}", offers)
+        await _send_stage_list(context.bot, chat_id, f"🇱🇺 Offres de stage Moovijob Luxembourg{cible_txt}", offers)
     else:
         await context.bot.send_message(
             chat_id,
@@ -657,7 +657,7 @@ async def suisse_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         offers = []
 
     if offers:
-        await _send_job_list(context.bot, chat_id, f"🇨🇭 Offres de stage en Suisse (Jobup & SwissDevJobs){cible_txt}", offers)
+        await _send_stage_list(context.bot, chat_id, f"🇨🇭 Offres de stage en Suisse (Jobup & SwissDevJobs){cible_txt}", offers)
     else:
         await context.bot.send_message(
             chat_id,
@@ -705,7 +705,7 @@ async def suede_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         offers = []
 
     if offers:
-        await _send_job_list(context.bot, chat_id, f"🇸🇪 Offres de stage en Suède (Platsbanken){cible_txt}", offers)
+        await _send_stage_list(context.bot, chat_id, f"🇸🇪 Offres de stage en Suède (Platsbanken){cible_txt}", offers)
     else:
         await context.bot.send_message(
             chat_id,
@@ -790,6 +790,87 @@ async def clean_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                      "(Telegram empêche de supprimer les messages de plus de 48 h.)")
     except Exception:
         pass
+
+
+def _save_stage_job(job: dict) -> None:
+    """Enregistre l'offre dans la table jobs avec la catégorie 'stage' (CV ingénieur adapté, pas job étudiant)."""
+    try:
+        conn = bot_core.get_connection()
+        now_iso = _dt.datetime.now(_dt.timezone.utc).isoformat()
+        bot_core.execute_write(
+            conn,
+            """
+            INSERT INTO jobs (url, title, company, site, location, apply_status, category, discovered_at)
+            VALUES (?, ?, ?, ?, ?, 'ready_to_apply', 'stage', ?)
+            ON CONFLICT(url) DO UPDATE SET
+                title = CASE WHEN excluded.title != '' AND excluded.title != 'Offre de stage' THEN excluded.title ELSE jobs.title END,
+                company = CASE WHEN excluded.company != '' THEN excluded.company ELSE jobs.company END,
+                location = CASE WHEN excluded.location != '' THEN excluded.location ELSE jobs.location END,
+                category = 'stage'
+            """,
+            (
+                job["url"],
+                job.get("title") or "Offre de stage",
+                job.get("employer_name") or "Entreprise",
+                job.get("source") or "web",
+                job.get("location") or "",
+                now_iso,
+            ),
+        )
+    except Exception as exc:
+        log.warning("Erreur insertion stage dans jobs.db : %s", exc)
+
+
+async def _send_stage_list(bot, chat_id: int, titre: str, jobs: list[dict]) -> None:
+    """Envoie chaque offre de stage (Luxembourg, Suisse, Suède, etc.) avec bouton
+    '📨 Préparer ma candidature' pour générer le CV d'ingénieur adapté à l'offre."""
+    # Exclure les offres déjà postulées ou ignorées
+    jobs = [
+        j for j in jobs
+        if not (j.get("url") and bot_core.is_job_decided(j.get("url"), j.get("title", ""), j.get("employer_name", "")))
+    ]
+
+    if not jobs:
+        await bot.send_message(chat_id, f"{titre} : aucune offre de moins d'une semaine trouvée.")
+        return
+    await bot.send_message(chat_id, f"<b>{html.escape(titre)}</b> — {len(jobs)} offre(s)",
+                           parse_mode=ParseMode.HTML)
+    for j in jobs:
+        url = j["url"]
+        h = bot_core.remember(url)
+        _save_stage_job(j)
+
+        t = html.escape((j.get("title") or "")[:90])
+        comp = html.escape((j.get("employer_name") or "")[:40])
+        loc = html.escape((j.get("location") or "")[:40])
+        src = html.escape((j.get("source") or "").capitalize())
+        txt = f"<b>{t}</b>\n🏢 {comp}" + (f" · 📍 {loc}" if loc else "")
+        extra = []
+        age = format_age_fr(j.get("posted_at"))
+        if age:
+            if "aujourd'hui" in age:
+                extra.append(f"🔥 <b>{age}</b>")
+            else:
+                extra.append(f"📅 {age}")
+        if src:
+            extra.append(f"🔎 {src}")
+        if extra:
+            txt += "\n" + " · ".join(extra)
+
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("📨 Préparer ma candidature", callback_data=f"prep:{h}"),
+                InlineKeyboardButton("Voir l'offre", url=j["url"]),
+            ],
+            [
+                InlineKeyboardButton("✅ J'ai postulé", callback_data=f"ok:{h}"),
+                InlineKeyboardButton("❌ Ignorer", callback_data=f"no:{h}"),
+            ],
+        ])
+        msg = await bot.send_message(chat_id, txt, parse_mode=ParseMode.HTML,
+                                     reply_markup=kb, disable_web_page_preview=True)
+        bot_core.set_card_message(url, msg.message_id)
+        await asyncio.sleep(0.25)
 
 
 async def _send_job_list(bot, chat_id: int, titre: str, jobs: list[dict]) -> None:
