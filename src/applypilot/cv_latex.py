@@ -27,6 +27,7 @@ log = logging.getLogger("applypilot.cv")
 
 CV_LATEX_DIR = config.APP_DIR / "cv_latex"
 EXPERIENCES_PATH = config.APP_DIR / "experiences.json"
+EXPERIENCES_EN_PATH = config.APP_DIR / "experiences_en.json"
 PHOTO_REL = "assets/photo.jpg"  # relatif au dossier de compilation
 
 # Libellés d'affichage des catégories de compétences.
@@ -41,6 +42,62 @@ SKILL_LABELS = {
     "infrastructure_reseau": "Infrastructure réseau",
     "securite_defensive_systeme": "Détection \\& SIEM",
     "cloud_iam": "Cloud \\& IAM",
+}
+
+SKILL_LABELS_EN = {
+    "securite_audits": "Audit \\& GRC",
+    "active_directory_identite": "Active Directory \\& IAM",
+    "systemes_reseaux": "Systems \\& Networking",
+    "ia_data": "AI \\& Data",
+    "devops_devsecops": "DevSecOps \\& Automation",
+    "securite_offensive_pentest": "Offensive Security \\& Pentest",
+    "developpement": "Development",
+    "infrastructure_reseau": "Network Infrastructure",
+    "securite_defensive_systeme": "Detection \\& SIEM",
+    "cloud_iam": "Cloud \\& IAM",
+}
+
+RESERVE_BRANCHES_EN: dict[str, dict[str, str]] = {
+    "SOC": {
+        "title": "SOC Analyst",
+        "profil": "Cybersecurity engineering student at INSA Centre Val de Loire (TOEIC 980/990), seeking a 6-month SOC Analyst & Incident Response internship starting April 2027. Hands-on experience with Splunk (SPL rules), Wazuh SIEM, DFIR-IRIS investigations, and threat hunting.",
+    },
+    "Pentest": {
+        "title": "Penetration Testing & Offensive Security",
+        "profil": "Cybersecurity engineering student at INSA Centre Val de Loire (HTB CPTS in progress, 4th/42 CTF Cybersup x Root-Me Pro), seeking a 6-month Offensive Security / Penetration Testing internship starting April 2027. Proven hands-on audits across Active Directory and OWASP Top 10 web applications.",
+    },
+    "GRC": {
+        "title": "Cybersecurity GRC & Risk Management",
+        "profil": "Cybersecurity engineering student at INSA Centre Val de Loire (TOEIC 980/990), seeking a 6-month Cybersecurity GRC & Risk internship starting April 2027. Practical experience building an ISO/IEC 27001 ISMS and conducting Azure cloud risk assessments mapped to NIST CSF and CIS Controls.",
+    },
+    "Audit": {
+        "title": "IT Security & Cybersecurity Audit",
+        "profil": "Cybersecurity engineering student at INSA Centre Val de Loire (TOEIC 980/990), seeking a 6-month IT & Cybersecurity Audit internship starting April 2027. Strong technical foundation spanning Active Directory audits, ISO/IEC 27001 compliance, NIST CSF risk assessments, and technical reporting.",
+    },
+    "AD": {
+        "title": "IAM, Active Directory & Entra ID",
+        "profil": "Cybersecurity engineering student at INSA Centre Val de Loire (TOEIC 980/990), seeking a 6-month IAM & Active Directory / Microsoft Entra ID internship starting April 2027. Experienced in AD DS deployment, PowerShell automation, Entra ID RBAC/SSO/MFA, and Active Directory security hardening.",
+    },
+    "Reseau": {
+        "title": "Network & Security Engineering",
+        "profil": "Cybersecurity engineering student at INSA Centre Val de Loire (TOEIC 980/990), seeking a 6-month Network & Security Engineering internship starting April 2027. Hands-on experience with pfSense segmentation, OpenVPN/IPsec tunnels, Active Directory integration, and network attack-surface reduction.",
+    },
+    "DevOps": {
+        "title": "DevSecOps & Cloud Security",
+        "profil": "Cybersecurity engineering student at INSA Centre Val de Loire (TOEIC 980/990), seeking a 6-month DevSecOps internship starting April 2027. Experience securing Kubernetes platforms (RBAC, Ansible hardening, TLS) and automating SAST/DAST CI pipelines (Semgrep, Trivy, gitleaks).",
+    },
+    "Cloud": {
+        "title": "Cloud Security & IAM",
+        "profil": "Cybersecurity engineering student at INSA Centre Val de Loire (TOEIC 980/990), seeking a 6-month Cloud Security internship starting April 2027. Hands-on projects across Azure cloud risk assessment (NIST CSF / CIS Controls), Microsoft Entra ID IAM, cloud Active Directory, and Kubernetes hardening.",
+    },
+    "IA": {
+        "title": "AI & Cybersecurity Engineering",
+        "profil": "Cybersecurity engineering student at INSA Centre Val de Loire (TOEIC 980/990), seeking a 6-month AI & Cybersecurity internship starting April 2027. Built an AI vulnerability triage engine (SecBERT, 11,000+ cases), ML anomaly detection on Wazuh SIEM logs, and least-privilege AI automation workflows.",
+    },
+    "Cyber": {
+        "title": "Cybersecurity Engineering",
+        "profil": "Cybersecurity engineering student at INSA Centre Val de Loire (TOEIC 980/990, HTB CPTS in progress), seeking a 6-month Cybersecurity internship starting April 2027. Broad hands-on foundation spanning Active Directory / Entra ID, offensive audits, SIEM/SOC investigations, network hardening, and ISO 27001 GRC.",
+    },
 }
 
 # Types d'expériences classés comme « Expériences » (le reste = « Projets »).
@@ -73,8 +130,72 @@ MAX_SKILLS_PER_LINE = 6
 # ---------------------------------------------------------------------------
 # Utilitaires
 # ---------------------------------------------------------------------------
-def load_experiences() -> dict:
-    return json.loads(EXPERIENCES_PATH.read_text(encoding="utf-8"))
+def load_experiences(lang: str = "fr") -> dict:
+    base = json.loads(EXPERIENCES_PATH.read_text(encoding="utf-8"))
+    if lang == "en" and EXPERIENCES_EN_PATH.exists():
+        en = json.loads(EXPERIENCES_EN_PATH.read_text(encoding="utf-8"))
+        # Fusionner automatiquement toute nouvelle expérience ajoutée à experiences.json
+        en_ids = {e["id"] for e in en.get("experiences", [])}
+        for exp in base.get("experiences", []):
+            if exp.get("id") not in en_ids:
+                en.setdefault("experiences", []).append(exp)
+        return en
+    return base
+
+
+_EN_TITLE_RE = re.compile(
+    r"(?<![a-z])("
+    r"intern|internship|working student|graduate|trainee|master thesis|bachelor thesis|thesis|"
+    r"cybersecurity|cyber security|information security|network engineer|security analyst|"
+    r"governance|compliance|resilience|access control|developer|software engineer|securing|"
+    r"praktikum|praktikant|hochschulpraktikant|praktikplats|exjobb|werkstudent|m/f/x|m/w/d|f/m/d"
+    r")(?![a-z])"
+)
+_FR_TITLE_RE = re.compile(
+    r"(?<![a-z])("
+    r"stage|stagiaire|stagiaires|alternance|alternant|cybersecurite|securite|"
+    r"ingenieur|administrateur|analyste|developpeur|reseau|reseaux|systeme|systemes|"
+    r"conseil|audit it|charge|chef de projet|h/f|f/h|h/f/x"
+    r")(?![a-z])"
+)
+_EN_STOPWORDS_RE = re.compile(r"\b(the|and|with|for|your|will|our|team|experience|skills|responsibilities|requirements|join|you|we are looking)\b")
+_FR_STOPWORDS_RE = re.compile(r"\b(le|la|les|des|pour|avec|vous|nous|equipe|missions|profil|competences|stage|entreprise|rejoignez|votre)\b")
+
+
+def offer_language(offer: dict) -> str:
+    """Détecte la langue de l'offre ('en' ou 'fr') pour adapter la langue du CV."""
+    note = _plain(offer.get("user_note") or offer.get("note") or "")
+    if re.search(r"\b(en anglais|in english|english|cv anglais|cv en)\b", note):
+        return "en"
+    if re.search(r"\b(en francais|in french|french|cv francais|cv fr)\b", note):
+        return "fr"
+
+    title_raw = str(offer.get("title") or "")
+    title = _plain(title_raw)
+    desc = _plain(" ".join(str(offer.get(k) or "") for k in ("full_description", "description")))
+
+    has_fr_title = bool(_FR_TITLE_RE.search(title))
+    has_en_title = bool(_EN_TITLE_RE.search(title))
+    has_french_accents = bool(re.search(r"[éèêëàâçùûôîïœ]", title_raw.lower()))
+
+    if has_en_title and not has_fr_title and not has_french_accents:
+        return "en"
+    if has_fr_title and not has_en_title:
+        return "fr"
+
+    if desc:
+        en_hits = len(_EN_STOPWORDS_RE.findall(desc[:2500]))
+        fr_hits = len(_FR_STOPWORDS_RE.findall(desc[:2500]))
+        if en_hits >= 5 and en_hits > fr_hits * 1.3:
+            return "en"
+        if fr_hits >= 5 and fr_hits > en_hits * 1.3:
+            return "fr"
+
+    if re.search(r"\b(stage|stagiaire|h/f|f/h)\b", title):
+        return "fr"
+    if has_en_title:
+        return "en"
+    return "fr"
 
 
 _LATEX_SPECIALS = {
@@ -560,7 +681,7 @@ def _render_bullet(b: str) -> str:
     return "".join(out)
 
 
-def _render_xp_block(exp: dict, max_bullets: int = 3) -> str:
+def _render_xp_block(exp: dict, max_bullets: int = 3, lang: str = "fr") -> str:
     title = latex_escape(exp["title"])
     dates = _format_dates(exp.get("dates", ""))
     org = exp.get("org", "").strip()
@@ -570,13 +691,13 @@ def _render_xp_block(exp: dict, max_bullets: int = 3) -> str:
     if org and org not in title:
         short_org = org
         if "challenge" in org.lower():
-            short_org = "challenge ECIU, Hambourg"
+            short_org = "ECIU Challenge, Hamburg" if lang == "en" else "challenge ECIU, Hambourg"
         elif "ormvag" in org.lower() or "stage devops" in org.lower():
             short_org = "ORMVAG"
-        elif "projet personnel" in org.lower():
-            short_org = "projet personnel"
-        elif "projet académique" in org.lower() or "projet de cours" in org.lower():
-            short_org = "projet académique"
+        elif "projet personnel" in org.lower() or "personal project" in org.lower():
+            short_org = "personal project" if lang == "en" else "projet personnel"
+        elif "projet académique" in org.lower() or "projet de cours" in org.lower() or "academic project" in org.lower():
+            short_org = "academic project" if lang == "en" else "projet académique"
         heading = f"{title} \\textnormal{{\\color{{midgray}}({latex_escape(short_org)})}}"
 
     lines = [f"\\entry{{{heading}}}{{{dates}}}"]
@@ -589,22 +710,31 @@ def _render_xp_block(exp: dict, max_bullets: int = 3) -> str:
     return "\n".join(lines)
 
 
-_GENDER_TAG = r"(?:H/F/X|H/F/D|M/F/D|F/H|H/F|M/F|F/M|H/X)"
+_GENDER_TAG = r"(?:H/F/X|H/F/D|M/F/X|M/F/D|M/W/D|F/M/D|F/M/N|F/H|H/F|M/F|F/M|W/M|H/X)"
 
 
-def _clean_banner_title(title: str) -> str:
+def _clean_banner_title(title: str, lang: str = "fr") -> str:
     """Nettoie un intitulé d'offre pour le bandeau : retire la mention de genre
     (avec ses parenthèses, sinon il reste « () »), la référence numérique et le
-    préfixe « Stage », puis les séparateurs laissés en bout de ligne."""
+    préfixe « Stage » / « Internship », puis les séparateurs laissés en bout de ligne."""
     t = re.sub(rf"[\(\[]\s*{_GENDER_TAG}\s*[\)\]]", "", title, flags=re.IGNORECASE)
     t = re.sub(rf"\b{_GENDER_TAG}\b", "", t, flags=re.IGNORECASE)
     t = re.sub(r"\(\d+[-_]?\d*\)", "", t)
     t = re.sub(r"[\(\[]\s*[\)\]]", "", t)  # parenthèses vidées par les retraits ci-dessus
     while True:
         prev = t
-        t = re.sub(r"^\s*(?:stage(?:\s+de\s+fin\s+d['’]études|\s+pfe|\s+d['’]ingénieur)?|stagiaire|élève[- ]ingénieur)\s*[-–—:]?\s*", "", t, flags=re.IGNORECASE)
+        t = re.sub(
+            r"^\s*(?:stage(?:\s+de\s+fin\s+d['’]études|\s+pfe|\s+d['’]ingénieur)?|stagiaire|élève[- ]ingénieur"
+            + (r"|internships?|intern|working\s+student|graduate\s+program|graduate|trainee" if lang == "en" else "")
+            + r")\s*[-–—:]?\s*",
+            "",
+            t,
+            flags=re.IGNORECASE,
+        )
         if t == prev:
             break
+    if lang == "en":
+        t = re.sub(r"\s*[-–—:]?\s*\b(?:internships?|intern)\b\s*$", "", t, flags=re.IGNORECASE)
     t = re.sub(r"\s+", " ", t).strip()
     return re.sub(r"\s*[-–—/|,:]+$", "", t).strip()
 
@@ -660,9 +790,11 @@ def _extract_custom_title(note: str | None) -> str | None:
 
 
 def _render_tex(exp_data: dict, selection: dict, offer: dict,
-                max_exp: int = 7, max_bullets: int = 2, rich_projects: int = 1) -> str:
+                max_exp: int = 7, max_bullets: int = 2, rich_projects: int = 1,
+                lang: str = "fr") -> str:
     """``max_bullets`` puces pour les ``rich_projects`` premiers projets, une
-    seule pour les suivants."""
+    seule pour les suivants. Supporte ``lang='fr'`` (défaut) et ``lang='en'``."""
+    is_en = (lang == "en")
     cand = exp_data["candidate"]
     by_id = {e["id"]: e for e in exp_data["experiences"]}
 
@@ -679,9 +811,10 @@ def _render_tex(exp_data: dict, selection: dict, offer: dict,
     pro_ids = set(fixed_ids) | set(user_fixed)
     # La plus récente en premier (tri stable : sans date lisible, l'ordre de la liste est gardé).
     fixed_ids.sort(key=lambda fid: _end_date_key(by_id[fid].get("dates", "")), reverse=True)
-    fixed_pro_entries = [_render_xp_block(by_id[fid], max_bullets=1) for fid in fixed_ids]
+    fixed_pro_entries = [_render_xp_block(by_id[fid], max_bullets=1, lang=lang) for fid in fixed_ids]
 
-    sec_exp = ("\\section{Expériences professionnelles}\n\n" + "\n\n".join(fixed_pro_entries)
+    exp_sec_title = "Professional Experience" if is_en else "Expériences professionnelles"
+    sec_exp = (f"\\section{{{exp_sec_title}}}\n\n" + "\n\n".join(fixed_pro_entries)
                if fixed_pro_entries else "")
 
     # 2. Audits & projets cybersécurité : sélectionnés selon l'offre et adaptés à la page
@@ -698,12 +831,13 @@ def _render_tex(exp_data: dict, selection: dict, offer: dict,
     proj_blocks = []
     for idx, p in enumerate(projets):
         b_count = max_bullets if idx < rich_projects else 1
-        proj_blocks.append(_render_xp_block(p, max_bullets=b_count))
+        proj_blocks.append(_render_xp_block(p, max_bullets=b_count, lang=lang))
 
     sec_projets = ""
     if proj_blocks:
+        default_proj_title = "Security Audits & Technical Projects" if is_en else "Audits & projets cybersécurité"
         projects_title = str((exp_data.get("cv_settings") or {}).get("projects_title")
-                             or "Audits & projets cybersécurité")
+                             or default_proj_title)
         sec_projets = f"\\section{{{latex_escape(projects_title)}}}\n\n" + "\n\n".join(proj_blocks)
 
     # Formation (format ATS propre)
@@ -715,8 +849,12 @@ def _render_tex(exp_data: dict, selection: dict, offer: dict,
 
         # Remplacement de l'intitulé pour le profil de référence uniquement
         if _is_reference_catalog(exp_data) and any("insa" in s.lower() for s in [raw_inst, raw_deg]):
-            inst_text = "Diplôme d'ingénieur (Bac+5), spécialité STI"
-            deg_text = "INSA Centre Val de Loire, Bourges"
+            if is_en:
+                inst_text = "Master of Engineering (M.Eng.), Information Systems Security (STI)"
+                deg_text = "INSA Centre Val de Loire, Bourges, France"
+            else:
+                inst_text = "Diplôme d'ingénieur (Bac+5), spécialité STI"
+                deg_text = "INSA Centre Val de Loire, Bourges"
             dates_text = "09/2023 – 2028"
         else:
             inst_text = raw_inst
@@ -747,8 +885,9 @@ def _render_tex(exp_data: dict, selection: dict, offer: dict,
         tail.sort(key=lambda c: -sum(1 for t in skills[c] if _plain(t) in must))  # tri stable
         ordered_cats = head + tail
     top_cats = ordered_cats[:MAX_SKILL_LINES]
+    labels_map = SKILL_LABELS_EN if is_en else SKILL_LABELS
     for i, cat in enumerate(top_cats):
-        label = SKILL_LABELS.get(cat, cat.replace("_", " ").title())
+        label = labels_map.get(cat, cat.replace("_", " ").title())
         cat_items = sorted(skills[cat], key=lambda t: _plain(t) not in must)  # tri stable : exigés d'abord
         items = ", ".join(latex_escape(t) for t in cat_items[:MAX_SKILLS_PER_LINE])
         sep = r"\par\vspace{2.5pt}" if i < len(top_cats) - 1 else r"\par"
@@ -777,22 +916,29 @@ def _render_tex(exp_data: dict, selection: dict, offer: dict,
     if ctf:
         bottom_lines.append(f"\\lbl{{CTF}}{' '.join(_render_bullet(a) for a in ctf)}")
     if langs:
-        bottom_lines.append(f"\\lbl{{Langues}}{langs}")
+        lang_lbl = "Languages" if is_en else "Langues"
+        bottom_lines.append(f"\\lbl{{{lang_lbl}}}{langs}")
     if other_distinctions and offer_branch(offer) in DISTINCTION_BRANCHES:
-        bottom_lines.append(f"\\lbl{{Distinction}}{' '.join(_render_bullet(a) for a in other_distinctions)}")
+        dist_lbl = "Awards" if is_en else "Distinction"
+        bottom_lines.append(f"\\lbl{{{dist_lbl}}}{' '.join(_render_bullet(a) for a in other_distinctions)}")
     certifs_langues = "\\par\\vspace{2.5pt}\n".join(bottom_lines) + "\\par"
 
     # Titre du bandeau cible (prise en compte prioritaire de la consigne utilisateur)
     user_note = offer.get("user_note") or offer.get("note")
     custom_title = offer.get("custom_title") or _extract_custom_title(user_note)
+    default_banner = "CYBERSECURITY ENGINEERING" if is_en else "AUDIT CYBERSÉCURITÉ & GRC"
     if custom_title:
-        clean_title = _clean_banner_title(custom_title) or custom_title.strip()
+        clean_title = _clean_banner_title(custom_title, lang=lang) or custom_title.strip()
     else:
-        clean_title = _clean_banner_title(offer.get("title") or "AUDIT CYBERSÉCURITÉ & GRC")
+        clean_title = _clean_banner_title(offer.get("title") or default_banner, lang=lang)
     if not clean_title:
-        clean_title = "AUDIT CYBERSÉCURITÉ & GRC"
-    candidature = f"STAGE --- {latex_escape(clean_title.upper())}"
-    pdftitle = f"CV {latex_escape(cand['full_name'])} - Stage {latex_escape(clean_title)}"
+        clean_title = default_banner
+    if is_en:
+        candidature = f"INTERNSHIP --- {latex_escape(clean_title.upper())}"
+        pdftitle = f"CV {latex_escape(cand['full_name'])} - Internship {latex_escape(clean_title)}"
+    else:
+        candidature = f"STAGE --- {latex_escape(clean_title.upper())}"
+        pdftitle = f"CV {latex_escape(cand['full_name'])} - Stage {latex_escape(clean_title)}"
 
     # Profil
     profil = _render_bullet(selection.get("profil") or _default_profil(exp_data, offer))
@@ -860,6 +1006,20 @@ def _render_tex(exp_data: dict, selection: dict, offer: dict,
         "CERTIFS_LANGUES": certifs_langues,
     }
     tex = _TEMPLATE
+    if is_en:
+        tex = (
+            tex.replace(r"\newcommand{\lbl}[1]{\textbf{\color{primary}#1\,:}\enspace}",
+                        r"\newcommand{\lbl}[1]{\textbf{\color{primary}#1:}\enspace}")
+               .replace(r"\textbf{\color{primary}Lieu\,:}", r"\textbf{\color{primary}Location:}")
+               .replace(r"\textbf{\color{primary}Tél\,:}", r"\textbf{\color{primary}Phone:}")
+               .replace(r"\textbf{\color{primary}Email\,:}", r"\textbf{\color{primary}Email:}")
+               .replace(r"\textbf{\color{primary}LinkedIn\,:}", r"\textbf{\color{primary}LinkedIn:}")
+               .replace(r"\textbf{\color{primary}GitHub\,:}", r"\textbf{\color{primary}GitHub:}")
+               .replace(r"\textbf{\color{primary}Web\,:}", r"\textbf{\color{primary}Portfolio:}")
+               .replace(r"\section{Formation}", r"\section{Education}")
+               .replace(r"\section{Compétences techniques}", r"\section{Technical Skills}")
+               .replace(r"\section{Certifications, CTF \& Langues}", r"\section{Certifications, CTF \& Languages}")
+        )
     for key, val in fields.items():
         tex = tex.replace(f"@@{key}@@", val)
     return tex
@@ -1183,7 +1343,7 @@ def _llm_selection_with_retries(offer: dict, exp_data: dict, attempts: int = 2) 
     return None
 
 
-def _compile_one_page(exp_data: dict, selection: dict, offer: dict, tex_path: Path) -> Path:
+def _compile_one_page(exp_data: dict, selection: dict, offer: dict, tex_path: Path, lang: str = "fr") -> Path:
     """Compile la sélection avec une mise en page adaptative : on réduit puces
     puis expériences jusqu'à tenir sur une seule page (CV de stage = 1 page
     impérative). Lève l'erreur de compilation si rien ne compile."""
@@ -1193,7 +1353,7 @@ def _compile_one_page(exp_data: dict, selection: dict, offer: dict, tex_path: Pa
     # fourni au plus sobre : on garde la première mise en page qui tient en 1 page.
     for max_exp, max_bullets, rich in [(4, 3, 4), (4, 2, 4), (4, 3, 2), (4, 2, 2), (4, 2, 1), (4, 1, 1),
                                        (3, 2, 1), (3, 1, 1), (2, 1, 1)]:
-        tex = _render_tex(exp_data, selection, offer, max_exp, max_bullets, rich_projects=rich)
+        tex = _render_tex(exp_data, selection, offer, max_exp, max_bullets, rich_projects=rich, lang=lang)
         tex_path.write_text(tex, encoding="utf-8")
         try:
             pdf = _compile(tex_path, passes=1)  # une passe suffit pour compter les pages
@@ -1207,25 +1367,59 @@ def _compile_one_page(exp_data: dict, selection: dict, offer: dict, tex_path: Pa
     raise RuntimeError(str(last_err))
 
 
-def generate_cv(offer: dict, out_name: str | None = None, tailor: bool | None = None) -> Path:
+def generate_cv(offer: dict, out_name: str | None = None, tailor: bool | None = None,
+                lang: str | None = None) -> Path:
     """Renvoie le CV à envoyer pour l'offre (chemin du PDF).
 
-    Par défaut, c'est l'un des CV de réserve, relus et validés par le candidat :
-    celui de la branche que demande l'offre, tel quel, sans aucun appel au LLM.
-
-    Le LLM n'intervient que si le candidat demande une adaptation (``tailor``,
-    vrai d'office dès qu'une consigne ✏️ accompagne l'offre) : il part alors du
-    CV de réserve et ne change que ce que la consigne ou l'offre exigent.
+    Détecte automatiquement la langue de l'offre : si l'offre est en anglais,
+    compile un CV 1 page en anglais (données factuelles d'experiences_en.json,
+    même sélection de branche validée, zéro invention).
 
     Lève RuntimeError/FileNotFoundError en cas d'échec (données ou compilation).
     """
-    exp_data = load_experiences()
+    cv_lang = lang or offer_language(offer)
+    exp_data = load_experiences(lang=cv_lang)
     branch = offer_branch(offer)
     offer_key = _offer_key(offer)
     if tailor is None:
         tailor = bool(str(offer.get("user_note") or offer.get("note") or "").strip())
 
     CV_LATEX_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Branche ANGLAIS : compilation rapide 1 page à partir de la réserve + catalogue anglais
+    if cv_lang == "en":
+        en_meta = RESERVE_BRANCHES_EN.get(branch) or RESERVE_BRANCHES_EN[_GENERIC_BRANCH]
+        base_sel = load_reserve(branch, exp_data) or _default_selection(exp_data, offer)
+        gaps_en = offer_gaps(offer, "", exp_data)
+        selection_en = {
+            **base_sel,
+            "profil": en_meta["profil"],
+        }
+        if gaps_en:
+            selection_en = _with_required_experiences(selection_en, gaps_en[:6], exp_data)
+
+        en_out_name = out_name or f"{cv_prefix(exp_data)}_{branch}_EN"
+        build_name = f"{en_out_name}_{offer_key}" if offer_key else en_out_name
+        tex_path = CV_LATEX_DIR / f"{build_name}.tex"
+        if tex_path.with_suffix(".pdf").exists():
+            try:
+                with open(tex_path.with_suffix(".pdf"), "a+b"):
+                    pass
+            except OSError:
+                import time as _t
+                tex_path = CV_LATEX_DIR / f"{build_name}_{_t.strftime('%H%M%S')}.tex"
+
+        en_offer = {**offer}
+        if not en_offer.get("custom_title") and not _extract_custom_title(en_offer.get("user_note") or en_offer.get("note")):
+            cleaned = _clean_banner_title(str(offer.get("title") or ""), lang="en")
+            en_offer["custom_title"] = cleaned if (cleaned and len(cleaned) <= 45) else en_meta["title"]
+
+        pdf = _compile_one_page(exp_data, selection_en, en_offer, tex_path, lang="en")
+        final = _publish_pdf(pdf, en_out_name, offer_key)
+        _GENERATION_SOURCE[str(final)] = f"en_reserve:{branch}"
+        _GENERATION_DETAILS[str(final)] = {"added": [], "left": [], "lang": "en"}
+        log.info("CV ANGLAIS « %s » compilé (1 page) pour « %s »", branch, str(offer.get("title") or "")[:60])
+        return final
 
     # 1. Sans consigne du candidat : le CV de réserve de la branche.
     stock = reserve_pdf(branch)

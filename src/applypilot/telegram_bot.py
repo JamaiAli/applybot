@@ -1982,9 +1982,12 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             pdf = await asyncio.to_thread(cv_latex.generate_cv, row)
             bot_core.set_cv_path(url, str(pdf))
             with open(pdf, "rb") as fh:
+                is_en_cv = "_EN" in pdf.stem
+                cap = ("🇬🇧 Ton CV adapté en anglais à cette offre (1 page)."
+                       if is_en_cv else "📄 Ton CV adapté à cette offre (1 page).")
                 await context.bot.send_document(
                     query.message.chat_id, InputFile(fh, filename=pdf.name),
-                    caption="📄 Ton CV adapté à cette offre (1 page).")
+                    caption=cap)
         except Exception as exc:
             log.exception("Génération CV échouée : %s", exc)
             await context.bot.send_message(
