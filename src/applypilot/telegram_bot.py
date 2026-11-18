@@ -389,6 +389,7 @@ async def commandes_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "• <code>/jobdistant</code> — Jobs étudiants et missions intérim en 100% télétravail (France entière)\n\n"
         "📬 <b>Suivi Recruteurs & Boîte Gmail</b>\n"
         "• <code>/track [jours]</code> — Analyse ta boîte Gmail pour détecter et classifier les réponses recruteurs (défaut : 7 jours)\n"
+        "• <code>/entretien</code> — Liste les entretiens obtenus (entreprises, créneaux, contacts et actions à faire)\n"
         "• <code>/confirmees</code> — Affiche le récapitulatif détaillé des candidatures confirmées et en cours\n"
         "• <code>/refus</code> — Liste les refus reçus avec entreprises, postes et dates\n"
         "• <code>/trackers</code> — Suivi des ouvertures de tes CV par les recruteurs (liens traceurs cliqués)\n\n"
@@ -1546,6 +1547,7 @@ async def _send_classified_report(
         empty_msg = {
             "confirmation": "📬 <i>Aucune candidature confirmée trouvée dans tes emails récents.</i>",
             "rejection": "✨ <i>Aucun refus trouvé dans tes emails récents !</i>",
+            "interview": "🎯 <i>Aucun entretien trouvé dans tes emails récents. Lance <code>/track</code> pour analyser ta boîte Gmail.</i>",
         }.get(classification, "<i>Aucun email trouvé.</i>")
         await update.effective_message.reply_text(empty_msg, parse_mode=ParseMode.HTML)
         return
@@ -1565,29 +1567,46 @@ async def _send_classified_report(
         date_str = _format_date_fr(e.get("received_at"))
 
         summary = ""
+        ext_dates = []
+        ext_actions = []
         if e.get("extracted_data"):
             try:
                 data = json.loads(e["extracted_data"])
                 summary = data.get("summary", "")
+                if classification == "interview":
+                    ext_dates = data.get("dates") or []
+                    ext_actions = data.get("action_items") or []
             except Exception:
                 pass
         if not summary and e.get("snippet"):
             summary = e["snippet"]
 
         clean_comp = html.escape(comp)
-        clean_subj = html.escape(subj)
+        clean_subj = html.escape(re.sub(r"\s+", " ", subj).strip())
         clean_title = html.escape(job_title)
 
         entry_lines = [
             f"<b>{i}. {clean_comp}</b>" + (f" — {clean_title}" if clean_title and clean_title != clean_subj else ""),
-            f"📅 <b>Date :</b> {date_str}",
+            f"📅 <b>Reçu le :</b> {date_str}",
             f"📬 <b>Objet :</b> {clean_subj}",
         ]
         if e.get("sender_name") or e.get("sender"):
             contact = html.escape(e.get("sender_name") or e.get("sender"))
             entry_lines.append(f"👤 <b>Expéditeur :</b> {contact}")
+        if classification == "interview" and ext_dates:
+            for d_item in ext_dates[:2]:
+                d_val = (d_item.get("date") or "").strip()
+                d_desc = (d_item.get("description") or "").strip()
+                slot = f"{d_val} — {d_desc}" if (d_val and d_desc) else (d_desc or d_val)
+                if slot:
+                    entry_lines.append(f"📆 <b>Créneau :</b> {html.escape(slot[:160])}")
+        if classification == "interview" and ext_actions:
+            for a_item in ext_actions[:2]:
+                task_txt = (a_item.get("task") or "").strip()
+                if task_txt:
+                    entry_lines.append(f"✅ <b>À faire :</b> {html.escape(task_txt[:160])}")
         if summary:
-            clean_summary = html.escape(re.sub(r"\s+", " ", summary).strip()[:200])
+            clean_summary = html.escape(re.sub(r"\s+", " ", summary).strip()[:220])
             entry_lines.append(f"💬 <i>{clean_summary}</i>")
 
         cards.append("\n".join(entry_lines))
@@ -1629,6 +1648,13 @@ async def refus_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Affiche le détail et dates des réponses négatives reçues."""
     await _send_classified_report(
         update, context, "rejection", "❌", "Refus reçus"
+    )
+
+
+async def entretien_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Affiche le récapitulatif détaillé des entretiens obtenus."""
+    await _send_classified_report(
+        update, context, "interview", "🎯", "Entretiens obtenus"
     )
 
 
@@ -2297,6 +2323,10 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("confirmees", confirmee_cmd))
     app.add_handler(CommandHandler("confirmee", confirmee_cmd))
     app.add_handler(CommandHandler("refus", refus_cmd))
+    app.add_handler(CommandHandler("entretien", entretien_cmd))
+    app.add_handler(CommandHandler("entretiens", entretien_cmd))
+    app.add_handler(CommandHandler("interview", entretien_cmd))
+    app.add_handler(CommandHandler("interviews", entretien_cmd))
     app.add_handler(CommandHandler("done", done_cmd))
     app.add_handler(CommandHandler("compteur", compteur_cmd))
     app.add_handler(CommandHandler("compteurs", compteur_cmd))
