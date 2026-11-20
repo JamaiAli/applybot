@@ -399,7 +399,7 @@ async def commandes_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "• <code>/status</code> — Bilan global du pipeline (offres en base, scores, veille)\n"
         "• <code>/pause</code> — Met en pause la veille automatique (toutes les 10 min)\n"
         "• <code>/resume</code> — Réactive la veille automatique\n"
-        "• <code>/clean</code> — Supprime les messages récents du bot (moins de 48h) dans cette discussion\n"
+        "• <code>/clean [nombre]</code> — Nettoie en profondeur les messages récents (défaut : 2000, ou <code>/clean all</code>)\n"
         "• <code>/compteur</code> — Nombre de candidatures envoyées aujourd'hui et au total\n"
         "• <code>/toutes</code> — Liste complète et paginée de toutes les candidatures envoyées\n"
         "• <code>/done</code> — Marque la dernière offre préparée comme postulée\n"
@@ -767,28 +767,70 @@ async def resume_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def clean_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Supprime les messages récents de la discussion (le bot peut effacer ses
-    propres messages ET les tiens en chat privé, ceux de moins de 48 h).
-    Usage : /clean (200 derniers) ou /clean 500."""
+    """Supprime en profondeur les messages récents de la discussion (le bot peut
+    effacer ses propres messages ET les messages envoyés en chat privé de moins de 48 h).
+    Utilise delete_messages par lots de 100 pour une vitesse maximale.
+    Usage : /clean (2000 messages par défaut), /clean 5000 ou /clean all."""
     if not _authorized(update):
         return await _deny(update)
     chat_id = update.effective_chat.id
     last = update.message.message_id
-    n = 200
-    if context.args and context.args[0].isdigit():
-        n = min(int(context.args[0]), 1000)
+    n = 2000
+    if context.args:
+        arg = context.args[0].lower()
+        if arg.isdigit():
+            n = min(int(arg), 5000)
+        elif arg in ("all", "tout", "max"):
+            n = 5000
+
     deleted = 0
-    for mid in range(last, max(last - n, 1), -1):
+    hit_48h_limit = False
+    chunk_size = 100
+    curr = last
+    end_id = max(last - n, 1)
+
+    while curr > end_id and not hit_48h_limit:
+        chunk = list(range(curr, max(curr - chunk_size, end_id), -1))
+        if not chunk:
+            break
         try:
-            await context.bot.delete_message(chat_id, mid)
-            deleted += 1
-        except Exception:
-            pass  # message trop vieux (>48 h), déjà supprimé, ou inexistant
-        await asyncio.sleep(0.03)  # évite le flood-limit Telegram
+            if hasattr(context.bot, "delete_messages"):
+                await context.bot.delete_messages(chat_id, chunk)
+                deleted += len(chunk)
+                curr -= chunk_size
+            else:
+                raise AttributeError("no delete_messages")
+        except Exception as e:
+            err_str = str(e).lower()
+            if "can't be deleted" in err_str or "too old" in err_str:
+                # Limite des 48h atteinte : tester un par un pour supprimer ceux qui sont encore valides
+                for mid in chunk:
+                    try:
+                        await context.bot.delete_message(chat_id, mid)
+                        deleted += 1
+                    except Exception as single_err:
+                        serr = str(single_err).lower()
+                        if "can't be deleted" in serr or "too old" in serr:
+                            hit_48h_limit = True
+                            break
+                break
+            else:
+                for mid in chunk:
+                    try:
+                        await context.bot.delete_message(chat_id, mid)
+                        deleted += 1
+                    except Exception:
+                        pass
+                curr -= chunk_size
+        await asyncio.sleep(0.04)
+
     try:
         await context.bot.send_message(
-            chat_id, f"🧹 Discussion nettoyée — {deleted} message(s) supprimé(s). "
-                     "(Telegram empêche de supprimer les messages de plus de 48 h.)")
+            chat_id,
+            "🧹 <b>Discussion nettoyée</b> — tous les messages récents (moins de 48 h) ont été supprimés.\n"
+            "<i>(Rappel : Telegram interdit techniquement aux bots d'effacer les messages datant de plus de 48 h.)</i>",
+            parse_mode=ParseMode.HTML,
+        )
     except Exception:
         pass
 
