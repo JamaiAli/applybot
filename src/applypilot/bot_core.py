@@ -658,6 +658,12 @@ def mark_student_job(url: str, title: str = "", employer: str = "") -> None:
     """Enregistre une offre comme job étudiant / intérim pour l'extension et le traceur."""
     if not url:
         return
+    try:
+        from applypilot.discovery.cyber_filter import is_handicap_targeted
+        if is_handicap_targeted(title, employer, ""):
+            return
+    except Exception:
+        pass
     import time as _time
     d = _load_student_jobs()
     jk = extract_indeed_jk(url)

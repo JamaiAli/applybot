@@ -234,6 +234,15 @@ def filter_and_tag(records: list[dict], keep_alt: bool = False, filter_cyber: bo
         if not is_stage(title, text, keep_alt):
             continue
 
+        comp = job.get("company") or {}
+        company_name = comp.get("name") if isinstance(comp, dict) else comp or ""
+        try:
+            from applypilot.discovery.cyber_filter import is_handicap_targeted
+            if is_handicap_targeted(title, str(company_name), text):
+                continue
+        except Exception:
+            pass
+
         title_domains = [d for d, rx in DOMAIN_RES.items() if rx.search(title)]
         strong_title_domains = [d for d in title_domains if d not in WEAK_DOMAINS]
         if filter_cyber and not CORE_RE.search(text) and not strong_title_domains:

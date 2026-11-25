@@ -142,10 +142,19 @@ def filter_and_tag(records: list[dict], weekend_only: bool = False,
         job = rec["job"]
         categories = rec.get("categories") or []
         title = _indeed.norm(job.get("title", ""))
+        comp = job.get("company") or {}
+        comp_name = comp.get("name") if isinstance(comp, dict) else comp or ""
         text = _indeed.job_text(job)
 
         if EXCLU_TITRE_RE.search(title):
             continue  # stage / alternance : hors sujet ici
+
+        try:
+            from applypilot.discovery.cyber_filter import is_handicap_targeted
+            if is_handicap_targeted(title, comp_name, text):
+                continue
+        except Exception:
+            pass
 
         we = bool(WEEKEND_RE.search(text))
         etu = bool(ETUDIANT_RE.search(text))
@@ -323,6 +332,13 @@ def search_interim_jobs(location: str | None = None, limit: int = 12,
                 loc_name = loc.get("display_name") if isinstance(loc, dict) else loc
                 posted = dt.isoformat(timespec="minutes") if dt else None
 
+                try:
+                    from applypilot.discovery.cyber_filter import is_handicap_targeted
+                    if is_handicap_targeted(title, str(comp_name or ""), _indeed.job_text(j)):
+                        continue
+                except Exception:
+                    pass
+
                 offers.append({
                     "url": j.get("link") or jid,
                     "title": title,
@@ -496,6 +512,13 @@ def search_remote_student_jobs(limit: int = 10, max_age_days: int = 14) -> list[
                 loc_name = loc.get("display_name") if isinstance(loc, dict) else loc
                 posted = dt.isoformat(timespec="minutes") if dt else None
 
+                try:
+                    from applypilot.discovery.cyber_filter import is_handicap_targeted
+                    if is_handicap_targeted(title, str(comp_name or ""), _indeed.job_text(j)):
+                        continue
+                except Exception:
+                    pass
+
                 offers.append({
                     "url": j.get("link") or jid,
                     "title": (j.get("title") or "").strip(),
@@ -557,6 +580,13 @@ def search_remote_interim_jobs(limit: int = 10, max_age_days: int = 14) -> list[
                 loc = j.get("location") or {}
                 loc_name = loc.get("display_name") if isinstance(loc, dict) else loc
                 posted = dt.isoformat(timespec="minutes") if dt else None
+
+                try:
+                    from applypilot.discovery.cyber_filter import is_handicap_targeted
+                    if is_handicap_targeted(title, str(comp_name or ""), _indeed.job_text(j)):
+                        continue
+                except Exception:
+                    pass
 
                 offers.append({
                     "url": j.get("link") or jid,

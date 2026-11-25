@@ -837,6 +837,15 @@ async def clean_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 def _save_stage_job(job: dict) -> None:
     """Enregistre l'offre dans la table jobs avec la catégorie 'stage', score /10 et raisonnement."""
+    title = job.get("title") or ""
+    company = job.get("employer_name") or job.get("company") or ""
+    desc = job.get("description") or ""
+    try:
+        from applypilot.discovery.cyber_filter import is_handicap_targeted
+        if is_handicap_targeted(title, company, desc):
+            return
+    except Exception:
+        pass
     try:
         conn = bot_core.get_connection()
         now_iso = _dt.datetime.now(_dt.timezone.utc).isoformat()

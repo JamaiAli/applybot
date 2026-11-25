@@ -108,6 +108,13 @@ def _parse_cards(html: str) -> list[dict]:
                 title, company = full.rsplit(" - ", 1)
             else:
                 title, company = full, DEFAULT_SITE
+
+            try:
+                from applypilot.discovery.cyber_filter import is_handicap_targeted
+                if is_handicap_targeted(title, company, full):
+                    continue
+            except Exception:
+                pass
             aria = a.get("aria-label") or ""
             location = aria.split(" à ", 1)[1].strip() if " à " in aria else None
             url = href if href.startswith("http") else BASE + href
@@ -438,10 +445,16 @@ def _search_hellowork_generic(
                             if EXCLU_STAGE_RE.search(title) or EXCLU_QUALIF_RE.search(title):
                                 continue
 
+                            card_text = card.get_text("\n", strip=True)
+                            try:
+                                from applypilot.discovery.cyber_filter import is_handicap_targeted
+                                if is_handicap_targeted(title, company, card_text):
+                                    continue
+                            except Exception:
+                                pass
+
                             if bot_core.is_job_decided(url, title, company):
                                 continue
-
-                            card_text = card.get_text("\n", strip=True)
                             dt = None
                             for line in reversed(card_text.splitlines()):
                                 if any(w in line.lower() for w in ("il y a", "hier", "aujourd")):

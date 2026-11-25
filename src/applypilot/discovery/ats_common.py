@@ -111,6 +111,15 @@ def insert_normalized_jobs(
             url = job.get("url")
             if not url:
                 continue
+            title = job.get("title") or ""
+            employer = job.get("employer_name") or default_site or ""
+            desc = job.get("full_description") or job.get("description") or ""
+            try:
+                from applypilot.discovery.cyber_filter import is_handicap_targeted
+                if is_handicap_targeted(title, employer, desc):
+                    continue
+            except Exception:
+                pass
             full_description = job.get("full_description")
             detail_scraped_at = now if full_description else None
             site = job.get("employer_name", default_site)

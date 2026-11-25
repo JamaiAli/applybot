@@ -114,12 +114,67 @@ _CYBER_FALSE_POSITIVE_RE = re.compile(
     r")(?![a-z])"
 )
 
+# Exclusions spécifiques aux offres destinées / réservées aux travailleurs handicapés (RQTH)
+_HANDICAP_TITLE_RE = re.compile(
+    r"(?<![a-z0-9])("
+    r"rqth|boeth|handi[- ]?stage|handi[- ]?alternance|handi[- ]?job|"
+    r"handicap|handicape|handicapee|handicapes|handicapees|"
+    r"tremplin[- ]?handicap|disability|disabled"
+    r")(?![a-z0-9])"
+)
+
+_HANDICAP_EMPLOYER_RE = re.compile(
+    r"(?<![a-z0-9])("
+    r"apf france handicap|tremplin handicap|tremplin|arpejeh|agefiph|fiphfp|"
+    r"club etre|talenteo|l adapt|ladapt|handi[- ]?sup|handi[- ]?partage|"
+    r"cap emploi|entreprise adaptee|esat|milieu protege"
+    r")(?![a-z0-9])"
+)
+
+_HANDICAP_DESC_RE = re.compile(
+    r"("
+    r"reservee?\s+(exclusivement\s+)?(aux?\s+)?(personnes?\s+(en\s+situation\s+de\s+)?handicap|travailleurs?\s+handicapes?|titulaires?\s+d['’ ]?une?\s+rqth|rqth)|"
+    r"(dediee?|destinee?)\s+(exclusivement\s+)?(aux?\s+)?(personnes?\s+(en\s+situation\s+de\s+)?handicap|travailleurs?\s+handicapes?|rqth)|"
+    r"(exigence|exigee?|obligatoire|justifier|titulaire|reconnaissance)\s*:?\s*(de\s+la\s+|d['’ ]?une?\s+)?rqth|"
+    r"beneficiaire\s+de\s+l['’ ]?obligation\s+d['’ ]?emploi|"
+    r"contrat\s+tremplin|"
+    r"uniquement\s+pour\s+(les\s+)?personnes?\s+(en\s+situation\s+de\s+)?handicap"
+    r")"
+)
+
+
+def is_handicap_targeted(title: str = "", employer: str = "", extra_text: str = "") -> bool:
+    """Détecte si une offre est spécifiquement réservée ou destinée aux personnes en situation de handicap (RQTH).
+
+    Renvoie True pour :
+    - Les offres avec RQTH, handicap, handi-stage, tremplin dans le titre.
+    - Les organismes spécialisés (APF France handicap, Tremplin, Agefiph, Arpejeh, Club Être, Talenteo, ESAT, etc.).
+    - Les offres dont la description stipule expressément un poste réservé/exclusif RQTH ou BOETH.
+
+    Renvoie False pour les offres normales avec simple mention légale inclusive
+    ('à compétences égales, poste ouvert aux personnes en situation de handicap').
+    """
+    t = norm_text(title)
+    emp = norm_text(employer)
+    extra = norm_text(extra_text)
+
+    if _HANDICAP_TITLE_RE.search(t):
+        return True
+    if _HANDICAP_EMPLOYER_RE.search(emp):
+        return True
+    if extra and _HANDICAP_DESC_RE.search(extra):
+        return True
+    return False
+
 
 def is_cyber_offer(title: str, employer: str = "", extra_text: str = "") -> bool:
     """Vrai si l'offre appartient bien au domaine cybersécurité / sécurité IT / infra-sécu."""
     t = norm_text(title)
     emp = norm_text(employer)
     extra = norm_text(extra_text)
+
+    if is_handicap_targeted(title, employer, extra_text):
+        return False
 
     if _CYBER_FALSE_POSITIVE_RE.search(t):
         return False
@@ -284,6 +339,9 @@ def filter_cyber_internships(
         if not is_stage_offer(title, contract):
             continue
 
+        if is_handicap_targeted(title, employer, desc):
+            continue
+
         if is_default_cyber:
             if not is_cyber_offer(title, employer, desc):
                 continue
@@ -374,6 +432,9 @@ def scrape_jobspy_cyber_internships(
                 desc = str(row.get("description") or "")
                 if desc.lower() == "nan":
                     desc = ""
+
+                if is_handicap_targeted(title, comp, desc):
+                    continue
 
                 raw_offers.append({
                     "title": title,
