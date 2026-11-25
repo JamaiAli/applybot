@@ -326,6 +326,10 @@ def fetch_pending_offers(min_score: int = MIN_SCORE, limit: int = MAX_CARDS,
           AND (eligibility IS NULL OR eligibility = 'eligible')
           AND COALESCE(apply_status, '') NOT IN
               ('applied', 'validated', 'ignored', 'skip_handicap')
+          AND LOWER(COALESCE(company, '')) NOT LIKE '%handicap%'
+          AND LOWER(COALESCE(site, '')) NOT LIKE '%handicap%'
+          AND LOWER(COALESCE(title, '')) NOT LIKE '%handicap%'
+          AND LOWER(COALESCE(title, '')) NOT LIKE '%rqth%'
           {strat_clause}
         ORDER BY (COALESCE(strategy, '') <> 'indeed_scrape'),
                  (posted_at IS NULL), posted_at DESC, fit_score DESC
@@ -333,6 +337,14 @@ def fetch_pending_offers(min_score: int = MIN_SCORE, limit: int = MAX_CARDS,
         params,
     ).fetchall()
     dict_rows = [dict(r) for r in rows]
+    try:
+        from applypilot.discovery.cyber_filter import is_handicap_targeted
+        dict_rows = [
+            r for r in dict_rows
+            if not is_handicap_targeted(r.get("title") or "", r.get("company") or "", r.get("score_reasoning") or "", r.get("site") or "")
+        ]
+    except Exception:
+        pass
     decided_keys = get_decided_job_keys(conn)
     if decided_keys:
         dict_rows = [
@@ -387,12 +399,24 @@ def fetch_new_scan_offers(new_urls: list[str], min_score: int = MIN_SCORE,
           AND (eligibility IS NULL OR eligibility = 'eligible')
           AND COALESCE(apply_status, '') NOT IN
               ('applied', 'validated', 'ignored', 'skip_handicap')
+          AND LOWER(COALESCE(company, '')) NOT LIKE '%handicap%'
+          AND LOWER(COALESCE(site, '')) NOT LIKE '%handicap%'
+          AND LOWER(COALESCE(title, '')) NOT LIKE '%handicap%'
+          AND LOWER(COALESCE(title, '')) NOT LIKE '%rqth%'
           AND url IN ({placeholders})
         ORDER BY (posted_at IS NULL), posted_at DESC, fit_score DESC
         """,
         params,
     ).fetchall()
     dict_rows = [dict(r) for r in rows]
+    try:
+        from applypilot.discovery.cyber_filter import is_handicap_targeted
+        dict_rows = [
+            r for r in dict_rows
+            if not is_handicap_targeted(r.get("title") or "", r.get("company") or "", r.get("score_reasoning") or "", r.get("site") or "")
+        ]
+    except Exception:
+        pass
     decided_keys = get_decided_job_keys(conn)
     if decided_keys:
         dict_rows = [

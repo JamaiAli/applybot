@@ -193,6 +193,17 @@ def _offer_keyboard(h: str, done: bool = False) -> InlineKeyboardMarkup:
 
 
 async def _send_offer(bot, chat_id: int, row: dict) -> None:
+    title = row.get("title") or ""
+    company = row.get("company") or row.get("site") or ""
+    site = row.get("site") or ""
+    desc = row.get("description") or row.get("score_reasoning") or ""
+    try:
+        from applypilot.discovery.cyber_filter import is_handicap_targeted
+        if is_handicap_targeted(title, company, desc, site):
+            log.info("Offre ignorée car ciblée handicap : %s | %s", title, company)
+            return
+    except Exception:
+        pass
     h = bot_core.remember(row["url"])
     msg = await bot.send_message(chat_id, _offer_text(row),
                                  parse_mode=ParseMode.HTML,

@@ -125,9 +125,10 @@ _HANDICAP_TITLE_RE = re.compile(
 
 _HANDICAP_EMPLOYER_RE = re.compile(
     r"(?<![a-z0-9])("
-    r"apf france handicap|tremplin handicap|tremplin|arpejeh|agefiph|fiphfp|"
+    r"handicap|handicape|handicapee|handicapes|handicapees|handi|"
+    r"talents handicap|groupe talents handicap|tremplin|arpejeh|agefiph|fiphfp|"
     r"club etre|talenteo|l adapt|ladapt|handi[- ]?sup|handi[- ]?partage|"
-    r"cap emploi|entreprise adaptee|esat|milieu protege"
+    r"cap emploi|entreprise adaptee|esat|milieu protege|rqth|boeth"
     r")(?![a-z0-9])"
 )
 
@@ -143,19 +144,20 @@ _HANDICAP_DESC_RE = re.compile(
 )
 
 
-def is_handicap_targeted(title: str = "", employer: str = "", extra_text: str = "") -> bool:
+def is_handicap_targeted(title: str = "", employer: str = "", extra_text: str = "", site: str = "") -> bool:
     """Détecte si une offre est spécifiquement réservée ou destinée aux personnes en situation de handicap (RQTH).
 
     Renvoie True pour :
     - Les offres avec RQTH, handicap, handi-stage, tremplin dans le titre.
-    - Les organismes spécialisés (APF France handicap, Tremplin, Agefiph, Arpejeh, Club Être, Talenteo, ESAT, etc.).
+    - Les organismes spécialisés et entreprises adaptées (Groupe Talents Handicap, Tremplin, Agefiph, Arpejeh, ESAT, etc.).
+    - Tout employeur ou site portant la mention 'handicap' ou 'handi'.
     - Les offres dont la description stipule expressément un poste réservé/exclusif RQTH ou BOETH.
 
     Renvoie False pour les offres normales avec simple mention légale inclusive
     ('à compétences égales, poste ouvert aux personnes en situation de handicap').
     """
     t = norm_text(title)
-    emp = norm_text(employer)
+    emp = f"{norm_text(employer)} {norm_text(site)}".strip()
     extra = norm_text(extra_text)
 
     if _HANDICAP_TITLE_RE.search(t):

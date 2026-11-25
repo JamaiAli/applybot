@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 import pytest
 from applypilot.discovery.cyber_filter import (
     is_handicap_targeted,
@@ -22,6 +24,9 @@ def test_is_handicap_targeted_exclusions():
     assert is_handicap_targeted(title="Stagiaire Réseau", employer="Arpejeh")
     assert is_handicap_targeted(title="Analyste Données", employer="Club Être")
     assert is_handicap_targeted(title="Opérateur Saisie", employer="ESAT Les Ateliers")
+    assert is_handicap_targeted(title="Stage Consultant GRC", employer="Groupe Talents Handicap")
+    assert is_handicap_targeted(title="Stage Consultant GRC", site="Groupe Talents Handicap")
+    assert is_handicap_targeted(title="Stage Consultant GRC", site="Talents Handicap")
 
     # Descriptions réservées
     assert is_handicap_targeted(
@@ -128,3 +133,20 @@ def test_indeed_student_filter_and_tag_drops_handicap_jobs():
     kept = filter_and_tag(records)
     assert len(kept) == 1
     assert kept[0]["job"]["company"]["name"] == "Decathlon"
+
+
+@pytest.mark.anyio
+async def test_send_offer_drops_handicap_job():
+    """Vérifie que _send_offer n'envoie jamais d'offre ciblée handicap sur Telegram."""
+    from applypilot import telegram_bot
+    mock_bot = SimpleNamespace(send_message=AsyncMock())
+    row = {
+        "url": "https://fr.indeed.com/viewjob?jk=63c898be4802b19f",
+        "title": "Stage : Consultant/e Cybersécurité GRC - Défense & Sécurité - Le Plessis Robinson",
+        "company": None,
+        "site": "Groupe Talents Handicap",
+        "description": "GRC, gouvernance...",
+    }
+    await telegram_bot._send_offer(mock_bot, 123, row)
+    mock_bot.send_message.assert_not_called()
+
