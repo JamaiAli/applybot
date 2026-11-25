@@ -204,6 +204,14 @@ async def _send_offer(bot, chat_id: int, row: dict) -> None:
             return
     except Exception:
         pass
+    # Exclure les offres déjà postulées (stricte ou doublon)
+    try:
+        is_app, _ = bot_core.check_already_applied(row.get("url"), title, company)
+        if is_app:
+            log.info("Offre déjà postulée ignorée avant envoi : %s | %s", title, company)
+            return
+    except Exception:
+        pass
     h = bot_core.remember(row["url"])
     msg = await bot.send_message(chat_id, _offer_text(row),
                                  parse_mode=ParseMode.HTML,
@@ -1996,8 +2004,35 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     if action == "jobapply":
-        # Job étudiant / intérim : CV fixe. Envoie le CV + le lien (téléphone) ET
-        # ouvre le formulaire pré-rempli sur le PC si tu y es.
+        # Job étudiant / intérim : CV fixe.
+        st_job = bot_core._load_student_jobs().get(url) or {}
+        st_title = st_job.get("title") or ""
+        st_emp = st_job.get("employer") or ""
+
+        # Vérification candidature déjà envoyée (stricte ou doublon)
+        is_app, prev_info = bot_core.check_already_applied(url, st_title, st_emp)
+        if is_app:
+            await _safe_answer_query(query, "⚠️ Candidature déjà envoyée !", show_alert=True)
+            prev_comp = (prev_info or {}).get("company") or st_emp or "l'entreprise"
+            prev_titre = (prev_info or {}).get("title") or st_title or "Job"
+            prev_at = (prev_info or {}).get("applied_at")
+            dt_txt = ""
+            if prev_at:
+                dt_obj = bot_core.parse_date_to_paris(prev_at)
+                if dt_obj:
+                    dt_txt = f" le {dt_obj.strftime('%d/%m/%Y à %H:%M')}"
+            chat_id = query.message.chat_id if query.message else update.effective_chat.id
+            await context.bot.send_message(
+                chat_id,
+                f"⚠️ <b>Tu as DÉJÀ postulé à ce job chez {html.escape(prev_comp)}{dt_txt} !</b>\n\n"
+                f"📌 <b>Poste :</b> {html.escape(prev_titre)}\n\n"
+                f"🛑 <i>Pour t'éviter d'envoyer un doublon au recruteur, la candidature a été bloquée.</i>\n\n"
+                f'🔗 <a href="{html.escape(url)}">Lien de l\'offre pour consultation</a>',
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True
+            )
+            return
+
         await _safe_answer_query(query, "C'est parti…")
         chat_id = query.message.chat_id
         if not JOB_CV.exists():
@@ -2007,9 +2042,6 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
 
         # Enregistrement immédiat pour l'extension Chrome et le traceur local
-        st_job = bot_core._load_student_jobs().get(url) or {}
-        st_title = st_job.get("title") or ""
-        st_emp = st_job.get("employer") or ""
         bot_core.mark_student_job(url, title=st_title, employer=st_emp)
         bot_core.set_last_prepared(url, cv_path=str(JOB_CV), job_type="student")
         bot_core.set_cv_path(url, str(JOB_CV))
@@ -2058,12 +2090,39 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     if action == "prep":
+        row = bot_core.fetch_one(url) or {}
+        cand_title = row.get("title") or ""
+        cand_comp = bot_core.display_company(row)
+
+        # Vérification candidature déjà envoyée (stricte ou doublon)
+        is_app, prev_info = bot_core.check_already_applied(url, cand_title, cand_comp)
+        if is_app:
+            await _safe_answer_query(query, "⚠️ Candidature déjà envoyée !", show_alert=True)
+            prev_comp = (prev_info or {}).get("company") or cand_comp or "l'entreprise"
+            prev_titre = (prev_info or {}).get("title") or cand_title or "Offre"
+            prev_at = (prev_info or {}).get("applied_at")
+            dt_txt = ""
+            if prev_at:
+                dt_obj = bot_core.parse_date_to_paris(prev_at)
+                if dt_obj:
+                    dt_txt = f" le {dt_obj.strftime('%d/%m/%Y à %H:%M')}"
+            chat_id = query.message.chat_id if query.message else update.effective_chat.id
+            await context.bot.send_message(
+                chat_id,
+                f"⚠️ <b>Tu as DÉJÀ postulé à cette offre chez {html.escape(prev_comp)}{dt_txt} !</b>\n\n"
+                f"📌 <b>Poste :</b> {html.escape(prev_titre)}\n\n"
+                f"🛑 <i>Pour t'éviter d'envoyer un doublon gênant au recruteur, la préparation automatique a été bloquée.</i>\n\n"
+                f'🔗 <a href="{html.escape(url)}">Lien de l\'offre pour consultation directe</a>',
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True
+            )
+            return
+
         await _safe_answer_query(query, "Préparation…")
         await context.bot.send_message(
             query.message.chat_id,
             "📨 Préparation de ta candidature : génération du CV adapté "
             "(tes expériences réelles, aucune invention)… ~10 s.")
-        row = bot_core.fetch_one(url) or {}
         pdf = None
         try:
             from applypilot import cv_latex

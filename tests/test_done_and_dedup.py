@@ -83,18 +83,23 @@ def test_set_apply_status_propagates_to_duplicates(mock_db):
 
 
 def test_fetch_pending_offers_excludes_duplicates_of_applied_jobs(mock_db):
+    from datetime import datetime, timezone
+    now_iso = datetime.now(timezone.utc).isoformat()
     conn = sqlite3.connect(str(mock_db))
     conn.execute(
         "INSERT INTO jobs (url, title, company, site, fit_score, eligibility, apply_status, posted_at, strategy) "
-        "VALUES ('u1', 'Stagiaire Pentest F/H', 'Orange', 'Orange', 9, 'eligible', 'applied', '2026-11-10T10:00:00Z', 'indeed_scrape')"
+        "VALUES ('u1', 'Stagiaire Pentest F/H', 'Orange', 'Orange', 9, 'eligible', 'applied', ?, 'indeed_scrape')",
+        (now_iso,)
     )
     conn.execute(
         "INSERT INTO jobs (url, title, company, site, fit_score, eligibility, apply_status, posted_at, strategy) "
-        "VALUES ('u2', 'Stagiaire Pentest F/H', 'Orange', 'Orange', 9, 'eligible', NULL, '2026-11-10T10:00:00Z', 'indeed_scrape')"
+        "VALUES ('u2', 'Stagiaire Pentest F/H', 'Orange', 'Orange', 9, 'eligible', NULL, ?, 'indeed_scrape')",
+        (now_iso,)
     )
     conn.execute(
         "INSERT INTO jobs (url, title, company, site, fit_score, eligibility, apply_status, posted_at, strategy) "
-        "VALUES ('u3', 'Stagiaire SOC Analyst', 'Thales', 'Thales', 9, 'eligible', NULL, '2026-11-10T10:00:00Z', 'indeed_scrape')"
+        "VALUES ('u3', 'Stagiaire SOC Analyst', 'Thales', 'Thales', 9, 'eligible', NULL, ?, 'indeed_scrape')",
+        (now_iso,)
     )
     conn.commit()
 

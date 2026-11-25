@@ -13,6 +13,7 @@ Règles de sécurité partagées :
 
 from __future__ import annotations
 
+from difflib import SequenceMatcher
 import hashlib
 import json
 import logging
@@ -21,6 +22,7 @@ import sqlite3
 import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from applypilot import config
 from applypilot.database import execute_write, get_connection, transition_state
@@ -116,6 +118,273 @@ def display_domaines(row: dict) -> str:
     return str(doms[0]) if doms else ""
 
 
+def clean_company_for_dedup(company: str | None) -> str:
+    """Normalise le nom de l'entreprise pour la déduplication :
+    retire minuscules, accents, ponctuation et formes juridiques / suffixes."""
+    if not company:
+        return ""
+    s = unicodedata.normalize("NFKD", str(company)).encode("ascii", "ignore").decode().lower()
+    s = re.sub(r"[^\w\s]|_", " ", s)
+    tokens = s.split()
+    fluff = {
+        "groupe", "group", "france", "sas", "sa", "sarl", "inc", "ltd", "gmbh", "ag",
+        "holding", "technologies", "technology", "defense", "solutions", "services",
+        "consulting", "corp", "corporation", "fr", "eu"
+    }
+    cleaned = [t for t in tokens if t not in fluff]
+    return " ".join(cleaned) if cleaned else " ".join(tokens)
+
+
+def clean_title_for_dedup(title: str | None) -> str:
+    """Normalise le titre pour la déduplication :
+    retire balises de genre, types de contrat, ponctuation et mots de liaison."""
+    if not title:
+        return ""
+    s = unicodedata.normalize("NFKD", str(title)).encode("ascii", "ignore").decode().lower()
+    # Retirer les mentions de genre (H/F, F/H, M/F, M/W/D, H/F/D, (e), etc.)
+    s = re.sub(r"\(?\b(?:h/f/d|f/h/d|h/f|f/h|m/f|f/m|m/w/d|f/m/d|w/m/d|femme/homme|homme/femme)\b\)?", " ", s)
+    s = re.sub(r"\([eé]\)|\(h/f\)|\(f/h\)", " ", s)
+    # Retirer les mentions de contrat
+    s = re.sub(r"\b(?:stage|stagiaire|internship|intern|trainee|traineeship|pfe|alternance|alternant|apprentissage|apprenti|cdi|cdd|etudiant|job etudiant)\b", " ", s)
+    # Remplacer toute ponctuation / underscore par un espace
+    s = re.sub(r"[^\w\s]|_", " ", s)
+    # Mots de liaison / stopwords fréquents
+    stopwords = {"de", "du", "des", "la", "le", "les", "en", "et", "pour", "sur", "dans", "chez", "a", "au", "aux", "d", "l", "un", "une"}
+    tokens = [t for t in s.split() if t not in stopwords]
+    return " ".join(tokens)
+
+
+def extract_indeed_jk(url: str | None) -> str | None:
+    """Extrait le job key Indeed (jk) d'une URL."""
+    if not url:
+        return None
+    m = re.search(r"[?&]jk=([a-zA-Z0-9_-]+)", url)
+    if m:
+        return m.group(1).lower()
+    m = re.search(r"/(?:setup|form|viewjob|clk)/([a-f0-9]{16})", url, re.I)
+    if m:
+        return m.group(1).lower()
+    m = re.search(r" ([a-f0-9]{16}) ", url)
+    if m:
+        return m.group(1).lower()
+    return None
+
+
+def canonicalize_job_url(url: str | None) -> str:
+    """Retourne une clé canonique d'identification pour l'URL."""
+    if not url:
+        return ""
+    url = url.strip()
+    jk = extract_indeed_jk(url)
+    if jk:
+        return f"indeed:{jk}"
+    m_hw = re.search(r"/(?:emplois|offres)/(\d+)\.html", url)
+    if m_hw:
+        return f"hellowork:{m_hw.group(1)}"
+    try:
+        parsed = urlparse(url)
+        qs = parse_qs(parsed.query)
+        tracking_params = {"utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term", "tk", "from", "vjs", "trk", "ref"}
+        clean_qs = {k: v for k, v in qs.items() if k.lower() not in tracking_params}
+        new_query = urlencode(clean_qs, doseq=True)
+        return urlunparse((parsed.scheme, parsed.netloc.lower(), parsed.path.rstrip("/"), "", new_query, ""))
+    except Exception:
+        return url.lower().rstrip("/")
+
+
+def is_duplicate_offer(title1: str | None, comp1: str | None, url1: str | None,
+                       title2: str | None, comp2: str | None, url2: str | None) -> bool:
+    """Détermine si deux offres sont identiques (même canonical URL ou même entreprise + poste)."""
+    can1 = canonicalize_job_url(url1)
+    can2 = canonicalize_job_url(url2)
+    if can1 and can2 and can1 == can2:
+        return True
+
+    c_comp1 = clean_company_for_dedup(comp1)
+    c_comp2 = clean_company_for_dedup(comp2)
+    c_t1 = clean_title_for_dedup(title1)
+    c_t2 = clean_title_for_dedup(title2)
+
+    if not c_t1 or not c_t2:
+        return False
+
+    comp_match = False
+    generic_comps = {"", "entreprise", "candidature", "manual", "indeed", "hellowork", "moovijob", "—"}
+    if c_comp1 in generic_comps or c_comp2 in generic_comps:
+        comp_match = None
+    elif c_comp1 == c_comp2:
+        comp_match = True
+    elif (len(c_comp1) >= 3 and c_comp1 in c_comp2) or (len(c_comp2) >= 3 and c_comp2 in c_comp1):
+        comp_match = True
+
+    if comp_match is False:
+        return False
+
+    if c_t1 == c_t2:
+        return True
+
+    raw1 = c_t1.replace(" ", "")
+    raw2 = c_t2.replace(" ", "")
+    if raw1 == raw2:
+        return True
+
+    char_sim = SequenceMatcher(None, raw1, raw2).ratio()
+    if comp_match is True:
+        if char_sim >= 0.85:
+            return True
+        tok1 = set(c_t1.split())
+        tok2 = set(c_t2.split())
+        jaccard = len(tok1 & tok2) / len(tok1 | tok2) if (tok1 | tok2) else 0.0
+        if jaccard >= 0.70:
+            return True
+        if (len(c_t1) >= 20 and c_t1 in c_t2) or (len(c_t2) >= 20 and c_t2 in c_t1):
+            return True
+    else:
+        if char_sim >= 0.92 and len(raw1) >= 20:
+            return True
+
+    return False
+
+
+class DuplicateIndex:
+    """Index optimisé pour la détection rapide de doublons."""
+    def __init__(self, jobs: list[dict] | None = None):
+        self.can_urls: set[str] = set()
+        self.exact_urls: set[str] = set()
+        self.by_comp: dict[str, list[dict]] = {}
+        self.generic_comp_jobs: list[dict] = []
+        self.all_jobs: list[dict] = []
+        if jobs:
+            for j in jobs:
+                self.add_job(j)
+
+    def add_job(self, j: dict) -> None:
+        self.all_jobs.append(j)
+        u = (j.get("url") or "").strip()
+        if u:
+            self.exact_urls.add(u)
+            c_u = canonicalize_job_url(u)
+            if c_u:
+                self.can_urls.add(c_u)
+
+        comp = j.get("company") or j.get("site") or j.get("employer") or j.get("employer_name") or ""
+        c_comp = clean_company_for_dedup(comp)
+        t_cln = clean_title_for_dedup(j.get("title") or "")
+        j_aug = dict(j, _c_comp=c_comp, _t_cln=t_cln, _t_raw=t_cln.replace(" ", ""))
+
+        generic_comps = {"", "entreprise", "candidature", "manual", "indeed", "hellowork", "moovijob", "—"}
+        if c_comp in generic_comps:
+            self.generic_comp_jobs.append(j_aug)
+        else:
+            self.by_comp.setdefault(c_comp, []).append(j_aug)
+
+    def is_duplicate(self, title: str | None, company: str | None, url: str | None) -> tuple[bool, dict | None]:
+        u = (url or "").strip()
+        if u and u in self.exact_urls:
+            for j in self.all_jobs:
+                if (j.get("url") or "").strip() == u:
+                    return True, j
+
+        if u:
+            c_u = canonicalize_job_url(u)
+            if c_u and c_u in self.can_urls:
+                for j in self.all_jobs:
+                    if canonicalize_job_url(j.get("url")) == c_u:
+                        return True, j
+
+        c_comp = clean_company_for_dedup(company)
+        c_t = clean_title_for_dedup(title)
+        if not c_t:
+            return False, None
+        raw_t = c_t.replace(" ", "")
+
+        candidates = list(self.generic_comp_jobs)
+        if c_comp:
+            for comp_key, clist in self.by_comp.items():
+                if comp_key == c_comp or (len(c_comp) >= 3 and c_comp in comp_key) or (len(comp_key) >= 3 and comp_key in c_comp):
+                    candidates.extend(clist)
+
+        for cand in candidates:
+            cand_raw = cand["_t_raw"]
+            cand_comp = cand["_c_comp"]
+
+            if raw_t == cand_raw:
+                return True, cand
+
+            comp_matched = bool(cand_comp and c_comp and (cand_comp == c_comp or c_comp in cand_comp or cand_comp in c_comp))
+            sim = SequenceMatcher(None, raw_t, cand_raw).ratio()
+            if comp_matched:
+                if sim >= 0.85:
+                    return True, cand
+                tok1 = set(c_t.split())
+                tok2 = set(cand["_t_cln"].split())
+                jacc = len(tok1 & tok2) / len(tok1 | tok2) if (tok1 | tok2) else 0.0
+                if jacc >= 0.70:
+                    return True, cand
+                if (len(c_t) >= 20 and c_t in cand["_t_cln"]) or (len(cand["_t_cln"]) >= 20 and cand["_t_cln"] in c_t):
+                    return True, cand
+            else:
+                if sim >= 0.92 and len(raw_t) >= 20:
+                    return True, cand
+
+        return False, None
+
+
+def check_already_applied(url: str | None, title: str = "", company: str = "") -> tuple[bool, dict | None]:
+    """Vérifie si l'utilisateur a DÉJÀ postulé à cette offre (en base ou student_jobs.json).
+    Retourne (True, info_offre_postulee) ou (False, None)."""
+    if (not title or not company) and url:
+        r = fetch_one(url)
+        if r:
+            title = title or r.get("title") or ""
+            company = company or display_company(r) or ""
+        else:
+            try:
+                st = _load_student_jobs().get(url) or {}
+                title = title or st.get("title") or ""
+                company = company or st.get("employer") or ""
+            except Exception:
+                pass
+
+    applied_jobs: list[dict] = []
+    try:
+        conn = get_connection()
+        conn.row_factory = sqlite3.Row
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+        has_applied_at = "applied_at" in cols
+        has_disc_at = "discovered_at" in cols
+        app_at_col = "applied_at" if has_applied_at else "NULL AS applied_at"
+        disc_at_col = "discovered_at" if has_disc_at else "NULL AS discovered_at"
+        where_clause = "applied_at IS NOT NULL OR apply_status = 'applied' OR state = 'applied'" if has_applied_at else "apply_status = 'applied'"
+        rows = conn.execute(f"""
+            SELECT url, title, company, site, {app_at_col}, {disc_at_col}
+            FROM jobs
+            WHERE {where_clause}
+        """).fetchall()
+        applied_jobs.extend(dict(r) for r in rows)
+    except Exception as exc:
+        log.warning("Erreur chargement jobs postulés : %s", exc)
+
+    try:
+        st_data = _load_student_jobs()
+        for k, v in st_data.items():
+            if v.get("apply_status") == "applied":
+                applied_jobs.append({
+                    "url": v.get("url") or (k if not k.startswith("jk:") else ""),
+                    "title": v.get("title") or "",
+                    "company": v.get("employer") or "",
+                    "applied_at": v.get("applied_at") or "",
+                })
+    except Exception as exc:
+        log.warning("Erreur chargement student_jobs postulés : %s", exc)
+
+    if not applied_jobs:
+        return False, None
+
+    idx = DuplicateIndex(applied_jobs)
+    return idx.is_duplicate(title, company, url)
+
+
 def get_decided_job_keys(conn: sqlite3.Connection | None = None) -> set[tuple[str, str]]:
     """Retourne l'ensemble des paires (_norm_key(titre), _norm_key(entreprise))
     pour toutes les offres déjà décidées (applied, validated, ignored, skip_handicap)."""
@@ -144,18 +413,18 @@ def get_decided_job_keys(conn: sqlite3.Connection | None = None) -> set[tuple[st
 
 
 def _dedup_cross_source(rows: list[dict]) -> list[dict]:
-    """Supprime les doublons inter-sources : même (titre, entreprise, ville)
-    normalisés → on garde la 1ʳᵉ ligne (l'ordre de tri décide du gagnant).
-    La dédup intra-source par URL est déjà assurée en base (clé primaire)."""
-    seen: set[tuple[str, str, str]] = set()
+    """Supprime les doublons inter-sources en conservant la première offre (ordre de tri).
+    Détecte les doublons stricts et flous (variations de titre, suffixes, ponctuation)."""
+    idx = DuplicateIndex()
     out: list[dict] = []
     for r in rows:
-        key = (_norm_key(r.get("title")),
-               _norm_key(display_company(r)),
-               _norm_key(r.get("location")))
-        if key in seen:
+        title = r.get("title")
+        comp = display_company(r)
+        url = r.get("url")
+        is_dup, _ = idx.is_duplicate(title, comp, url)
+        if is_dup:
             continue
-        seen.add(key)
+        idx.add_job(r)
         out.append(r)
     return out
 
@@ -345,13 +614,10 @@ def fetch_pending_offers(min_score: int = MIN_SCORE, limit: int = MAX_CARDS,
         ]
     except Exception:
         pass
-    decided_keys = get_decided_job_keys(conn)
-    if decided_keys:
-        dict_rows = [
-            r for r in dict_rows
-            if (_norm_key(r.get("title")), _norm_key(display_company(r))) not in decided_keys
-            and (_norm_key(r.get("title")), "") not in decided_keys
-        ]
+    dict_rows = [
+        r for r in dict_rows
+        if not is_job_decided(r.get("url") or "", r.get("title") or "", display_company(r))
+    ]
     # Filtrer par âge max (strictement <= 7 jours par défaut)
     max_days = _resolve_max_age_days(max_age_days)
     filtered = _filter_by_age(dict_rows, max_days)
@@ -417,13 +683,10 @@ def fetch_new_scan_offers(new_urls: list[str], min_score: int = MIN_SCORE,
         ]
     except Exception:
         pass
-    decided_keys = get_decided_job_keys(conn)
-    if decided_keys:
-        dict_rows = [
-            r for r in dict_rows
-            if (_norm_key(r.get("title")), _norm_key(display_company(r))) not in decided_keys
-            and (_norm_key(r.get("title")), "") not in decided_keys
-        ]
+    dict_rows = [
+        r for r in dict_rows
+        if not is_job_decided(r.get("url") or "", r.get("title") or "", display_company(r))
+    ]
     filtered = _filter_by_age(dict_rows, 7)
     sorted_rows = _sort_offers_by_freshness(filtered)
     deduped = _dedup_cross_source(sorted_rows)
@@ -504,30 +767,44 @@ def set_apply_status(url: str, status: str, note: str | None = None) -> None:
     # Propagation automatique aux doublons (même titre et entreprise)
     if status in ("applied", "ignored"):
         try:
-            cur_job = fetch_one(url)
-            if cur_job and cur_job.get("title"):
-                norm_t = _norm_key(cur_job.get("title"))
-                norm_c = _norm_key(display_company(cur_job))
-                all_sim = conn.execute(
-                    "SELECT url, title, company, site FROM jobs WHERE url <> ? AND COALESCE(apply_status, '') <> ?",
-                    (url, status),
-                ).fetchall()
-                for r in all_sim:
-                    if _norm_key(r["title"]) == norm_t:
-                        other_c = _norm_key(display_company(dict(r)))
-                        if not norm_c or not other_c or norm_c == other_c:
-                            other_url = r["url"]
+            cur_job = fetch_one(url) or {}
+            c_title = cur_job.get("title") or ""
+            c_comp = display_company(cur_job)
+            all_sim = conn.execute(
+                "SELECT url, title, company, site FROM jobs WHERE url <> ? AND COALESCE(apply_status, '') <> ?",
+                (url, status),
+            ).fetchall()
+            for r in all_sim:
+                other_dict = dict(r)
+                if is_duplicate_offer(c_title, c_comp, url, other_dict.get("title"), display_company(other_dict), other_dict.get("url")):
+                    other_url = other_dict["url"]
+                    if status == "applied":
+                        execute_write(conn, "UPDATE jobs SET apply_status = ?, applied_at = ? WHERE url = ?", (status, now_iso, other_url))
+                    else:
+                        execute_write(conn, "UPDATE jobs SET apply_status = ? WHERE url = ?", (status, other_url))
+                    if to_state:
+                        try:
+                            transition_state(conn, other_url, to_state,
+                                             reason=f"bot:duplicate_{status}_of:{url}",
+                                             force=True, commit=True)
+                        except Exception:
+                            pass
+
+            # Propagation dans student_jobs.json
+            try:
+                sd = _load_student_jobs()
+                changed = False
+                for k, v in sd.items():
+                    if v.get("apply_status") != status:
+                        if is_duplicate_offer(c_title, c_comp, url, v.get("title"), v.get("employer"), v.get("url") or k):
+                            sd[k]["apply_status"] = status
                             if status == "applied":
-                                execute_write(conn, "UPDATE jobs SET apply_status = ?, applied_at = ? WHERE url = ?", (status, now_iso, other_url))
-                            else:
-                                execute_write(conn, "UPDATE jobs SET apply_status = ? WHERE url = ?", (status, other_url))
-                            if to_state:
-                                try:
-                                    transition_state(conn, other_url, to_state,
-                                                     reason=f"bot:duplicate_{status}_of:{url}",
-                                                     force=True, commit=True)
-                                except Exception:
-                                    pass
+                                sd[k]["applied_at"] = now_iso
+                            changed = True
+                if changed:
+                    _STUDENT_JOBS_PATH.write_text(json.dumps(sd, ensure_ascii=False, indent=2), encoding="utf-8")
+            except Exception:
+                pass
         except Exception as exc:
             log.debug("Propagation doublon échouée pour %s : %s", url, exc)
 
@@ -588,11 +865,16 @@ def get_card_message(url: str) -> int | None:
 
 
 def is_job_decided(url: str, title: str = "", employer: str = "") -> bool:
-    """Vrai si l'offre a déjà été postulée ou ignorée."""
-    if not url:
+    """Vrai si l'offre a déjà été décidée (postulée, ignorée, archivée ou ciblée handicap)."""
+    if not url and not title:
         return False
 
-    # 1. Vérification dans student_jobs.json
+    # 1. Candidature déjà envoyée (en base ou student_jobs.json)
+    is_app, _ = check_already_applied(url, title, employer)
+    if is_app:
+        return True
+
+    # 2. Vérification dans student_jobs.json
     try:
         sd = _load_student_jobs()
         jk = extract_indeed_jk(url)
@@ -605,15 +887,33 @@ def is_job_decided(url: str, title: str = "", employer: str = "") -> bool:
     except Exception:
         pass
 
-    # 2. Vérification dans la table jobs
+    # 3. Vérification dans la table jobs (décision directe sur l'URL)
     try:
         row = fetch_one(url)
-        if row and (row.get("apply_status") in ("applied", "ignored") or row.get("state") in ("applied", "archived")):
+        if row and (row.get("apply_status") in ("applied", "ignored", "skip_handicap") or row.get("state") in ("applied", "archived")):
             return True
     except Exception:
         pass
 
-    # 3. Vérification par (titre, entreprise) si fournis
+    # 4. Vérification doublon parmi les offres ignorées / archivées
+    try:
+        conn = get_connection()
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("""
+            SELECT url, title, company, site
+            FROM jobs
+            WHERE COALESCE(apply_status, '') IN ('ignored', 'skip_handicap')
+               OR state = 'archived'
+        """).fetchall()
+        if rows:
+            idx = DuplicateIndex([dict(r) for r in rows])
+            is_dup, _ = idx.is_duplicate(title, employer, url)
+            if is_dup:
+                return True
+    except Exception:
+        pass
+
+    # 5. Repli sur clés historiques
     if title:
         try:
             conn = get_connection()
@@ -645,22 +945,6 @@ STUDENT_KEYWORDS = (
     "kfc", "leclerc", "carrefour", "lidl", "auchan", "intermarche", "intermarché",
     "rayon", "mise en rayon", "reassort", "réassort"
 )
-
-
-def extract_indeed_jk(url: str | None) -> str | None:
-    """Extrait le job key Indeed (jk) d'une URL."""
-    if not url:
-        return None
-    m = re.search(r"[?&]jk=([a-zA-Z0-9_-]+)", url)
-    if m:
-        return m.group(1).lower()
-    m = re.search(r"/(?:setup|form|viewjob|clk)/([a-f0-9]{16})", url, re.I)
-    if m:
-        return m.group(1).lower()
-    m = re.search(r"([a-f0-9]{16})", url)
-    if m:
-        return m.group(1).lower()
-    return None
 
 
 def matches_student_keywords(text: str | None) -> bool:

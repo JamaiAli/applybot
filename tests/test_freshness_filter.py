@@ -155,16 +155,17 @@ def test_fetch_new_scan_offers_isolation(tmp_path, monkeypatch):
             cover_letter_path TEXT,
             posted_at TEXT,
             eligibility TEXT,
+            applied_at TEXT,
             apply_status TEXT
         )
     """)
     # Insertion de 2 anciennes offres (déjà en base)
-    conn.execute("INSERT INTO jobs (url, title, fit_score, posted_at) VALUES ('old1', 'Stage SOC', 9, '2026-11-14')")
-    conn.execute("INSERT INTO jobs (url, title, fit_score, posted_at) VALUES ('old2', 'Stage Pentest', 8, '2026-11-14')")
+    conn.execute("INSERT INTO jobs (url, title, fit_score, posted_at) VALUES ('old1', 'Stage SOC', 9, ?)", (_iso_days(10),))
+    conn.execute("INSERT INTO jobs (url, title, fit_score, posted_at) VALUES ('old2', 'Stage Pentest', 8, ?)", (_iso_days(10),))
 
     # Insertion de 2 nouvelles offres scannées en direct
-    conn.execute("INSERT INTO jobs (url, title, fit_score, posted_at, location) VALUES ('new1', 'Stage Analyste SOC', 9, '2026-11-16', 'Paris')")
-    conn.execute("INSERT INTO jobs (url, title, fit_score, posted_at, location) VALUES ('new2', 'Stage Développeur Python', 3, '2026-11-16', 'Lyon')")
+    conn.execute("INSERT INTO jobs (url, title, fit_score, posted_at, location) VALUES ('new1', 'Stage Analyste SOC', 9, ?, 'Paris')", (_iso_days(1),))
+    conn.execute("INSERT INTO jobs (url, title, fit_score, posted_at, location) VALUES ('new2', 'Stage Développeur Python', 3, ?, 'Lyon')", (_iso_days(1),))
     conn.commit()
     conn.close()
 
